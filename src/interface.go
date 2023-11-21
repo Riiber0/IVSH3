@@ -6,7 +6,6 @@ import (
 	"net"
 	"time"
 
-	"github.com/lucas-clemente/quic-go/fec"
 	"github.com/lucas-clemente/quic-go/internal/handshake"
 	"github.com/lucas-clemente/quic-go/internal/protocol"
 )
@@ -19,27 +18,6 @@ type VersionNumber = protocol.VersionNumber
 
 // A Cookie can be used to verify the ownership of the client address.
 type Cookie = handshake.Cookie
-
-// The number of bytes in QUIC
-type ByteCount = protocol.ByteCount
-
-// The MultipathServiceType expected by using multiple paths
-type MultipathServiceType int
-
-type FECSchemeID = protocol.FECSchemeID
-
-const (
-	XORFECScheme         FECSchemeID = protocol.XORFECScheme
-	ReedSolomonFECScheme FECSchemeID = protocol.ReedSolomonFECScheme
-	RLCFECScheme         FECSchemeID = protocol.RLCFECScheme
-)
-
-const (
-	// Aggregate bandwidth with multiple paths
-	Aggregate MultipathServiceType = iota
-	// Handover support when changing networks
-	Handover
-)
 
 // Stream is the interface implemented by QUIC streams
 type Stream interface {
@@ -74,31 +52,9 @@ type Stream interface {
 	// SetReadDeadline and SetWriteDeadline.
 	SetDeadline(t time.Time) error
 	// GetBytesSent returns the number of bytes of the stream that were sent to the peer
-	GetBytesSent() ByteCount
+	GetBytesSent() (protocol.ByteCount, error)
 	// GetBytesRetrans returns the number of bytes of the stream that were retransmitted to the peer
-	GetBytesRetrans() ByteCount
-
-	// Method for partial reliability
-
-	// Returns true if the stream is a Unreliable Stream, false otherwise
-	IsUnreliable() bool
-	// Sets this stream as a Unreliable stream if val is true.
-	// TODO: remove this method and implement it directly when opening a new Stream
-	SetUnreliable(val bool)
-	// Sets the retransmission deadline for this stream if it is unreliable
-	SetRetransmissionDeadline(val time.Duration)
-	GetRetransmissionDeadLine() time.Duration
-	// the reliability dealine is the amount of time a reader is ok to wait on an unreliable stream before skipping data if the next data are not present
-	SetReliabilityDeadline(val time.Duration)
-	GetReliabilityDeadline() time.Duration
-
-	// sets the stream replay buffer size. A stream will deliver its data as soon as the replay buffer is full or the stream is closed
-	SetReplayBufferSize(size uint64)
-	// gets the stream replay buffer size. A stream will deliver its data as soon as the replay buffer is full or the stream is closed
-	GetReplayBufferSize() uint64
-
-	SetMessageMode(val bool)
-	GetMessageMode() bool
+	GetBytesRetrans() (protocol.ByteCount, error)
 }
 
 // A Session is a QUIC connection between two peers.
@@ -122,23 +78,6 @@ type Session interface {
 	// The context is cancelled when the session is closed.
 	// Warning: This API should not be considered stable and might change soon.
 	Context() context.Context
-
-	// sets the FEC Scheme used by this session
-	SetFECScheme(scheme fec.FECScheme)
-	// gets the FEC Scheme used by this session
-	GetFECScheme() fec.FECScheme
-
-	SetRedundancyController(c fec.RedundancyController)
-
-	GetRedundancyController() fec.RedundancyController
-
-	GetOpenStreamNo() uint32
-
-	RemoveStream(stream protocol.StreamID)
-
-	GetStreamMap() (*streamsMap, error)
-
-	GetPaths() map[protocol.PathID]*path
 }
 
 // A NonFWSession is a QUIC connection between two peers half-way through the handshake.
@@ -154,10 +93,10 @@ type Config struct {
 	// If not set, it uses all versions available.
 	// Warning: This API should not be considered stable and will change soon.
 	Versions []VersionNumber
-	// Ask the server to omit the connection ID sent in the Public Header.
+	// Ask the server to truncate the connection ID sent in the Public Header.
 	// This saves 8 bytes in the Public Header in every packet. However, if the IP address of the server changes, the connection cannot be migrated.
 	// Currently only valid for the client.
-	RequestConnectionIDOmission bool
+	RequestConnectionIDTruncation bool
 	// HandshakeTimeout is the maximum duration that the cryptographic handshake may take.
 	// If the timeout is exceeded, the connection is closed.
 	// If this value is zero, the timeout is set to 10 seconds.
@@ -182,32 +121,8 @@ type Config struct {
 	KeepAlive bool
 	// Should we cache handshake parameters? If no cache available, should we create one?
 	CacheHandshake bool
-	// What is the maximum path ID that can be used over the connection?
-	MaxPathID uint8
-	// Was is the service expected by the use of multiple paths?
-	MultipathService MultipathServiceType
-	// A Notification ID, useful for darwin platform to notify network change
-	NotifyID string
-	// The ID of the FEC Scheme that we use to decode the FEC Frames
-	FECScheme protocol.FECSchemeID
-	// A redundancy controller that controls the amount of redundancy sent at any time.
-	RedundancyController fec.RedundancyController
-	// If set to true, recovered frames will bew sent when source symbols are recovered
-	DisableFECRecoveredFrames bool
-
-	ProtectReliableStreamFrames bool
-
-	UseFastRetransmit bool
-
-	OnlySendFECWhenApplicationLimited bool
-
-	ForceSendFECOnIdlePath bool
-
-	SchedulingScheme     protocol.SchedulingSchemeID
-	SchedulingSchemeName string
-
-	CongestionControl     protocol.CongestionControlID
-	CongestionControlName string
+	// Should the host try to create new paths, if possible?
+	CreatePaths bool
 }
 
 // A Listener for incoming QUIC connections

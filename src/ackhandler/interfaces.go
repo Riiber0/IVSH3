@@ -1,7 +1,6 @@
 package ackhandler
 
 import (
-	"github.com/lucas-clemente/quic-go/congestion"
 	"time"
 
 	"github.com/lucas-clemente/quic-go/internal/protocol"
@@ -12,11 +11,10 @@ import (
 type SentPacketHandler interface {
 	// SentPacket may modify the packet
 	SentPacket(packet *Packet) error
-	ReceivedAck(ackFrame *wire.AckFrame, withPacketNumber protocol.PacketNumber, encLevel protocol.EncryptionLevel, recvTime time.Time) error
-	ReceivedRecoveredFrame(frame *wire.RecoveredFrame, encLevel protocol.EncryptionLevel) error
-	SetHandshakeComplete()
+	ReceivedAck(ackFrame *wire.AckFrame, withPacketNumber protocol.PacketNumber, recvTime time.Time) error
 
 	// Specific to multipath operation
+	ReceivedClosePath(f *wire.ClosePathFrame, withPacketNumber protocol.PacketNumber, recvTime time.Time) error
 	SetInflightAsLost()
 
 	SendingAllowed() bool
@@ -30,25 +28,18 @@ type SentPacketHandler interface {
 
 	DuplicatePacket(packet *Packet)
 
-	ComputeRTOTimeout() time.Duration
-
 	GetStatistics() (uint64, uint64, uint64)
-
-	GetBytesInFlight() protocol.ByteCount
-	GetPacketsInFlight() []*Packet
-	GetSendAlgorithm() congestion.SendAlgorithmWithDebugInfo
-	GetLastSendTime() time.Time
 }
 
 // ReceivedPacketHandler handles ACKs needed to send for incoming packets
 type ReceivedPacketHandler interface {
-	ReceivedPacket(packetNumber protocol.PacketNumber, shouldInstigateAck bool, recovered bool) error
+	ReceivedPacket(packetNumber protocol.PacketNumber, shouldInstigateAck bool) error
 	SetLowerLimit(protocol.PacketNumber)
 
 	GetAlarmTimeout() time.Time
 	GetAckFrame() *wire.AckFrame
-	GetRecoveredFrame() *wire.RecoveredFrame
 
-	GetStatistics() (uint64, uint64)
-	SentRecoveredFrame(f *wire.RecoveredFrame)
+	GetClosePathFrame() *wire.ClosePathFrame
+
+	GetStatistics() uint64
 }

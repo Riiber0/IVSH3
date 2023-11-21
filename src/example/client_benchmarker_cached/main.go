@@ -22,7 +22,6 @@ func main() {
 	verbose := flag.Bool("v", false, "verbose")
 	multipath := flag.Bool("m", false, "multipath")
 	output := flag.String("o", "", "logging output")
-	skipVerify := flag.Bool("s", false, "skip TLS verification")
 	flag.Parse()
 	urls := flag.Args()
 	hostnameDelimiter := strings.LastIndex(urls[0], "/")
@@ -43,15 +42,9 @@ func main() {
 		log.SetOutput(logfile)
 	}
 
-	var maxPathID uint8
-	if *multipath {
-		// Two path topology
-		maxPathID = 2
-	}
-
 	quicConfig := &quic.Config{
+		CreatePaths: *multipath,
 		CacheHandshake: true,
-		MaxPathID:      maxPathID,
 	}
 
 	hclient := &http.Client{
@@ -77,7 +70,7 @@ func main() {
 	wg.Wait()
 
 	hclient = &http.Client{
-		Transport: &h2quic.RoundTripper{QuicConfig: quicConfig, TLSClientConfig: &tls.Config{InsecureSkipVerify: *skipVerify}},
+		Transport: &h2quic.RoundTripper{QuicConfig: quicConfig, TLSClientConfig: &tls.Config{InsecureSkipVerify: true}},
 	}
 
 	// Now perform connections in 1-RTT

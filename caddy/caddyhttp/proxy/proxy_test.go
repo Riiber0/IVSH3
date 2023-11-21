@@ -39,9 +39,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/caddyserver/caddy/caddyfile"
-	"github.com/caddyserver/caddy/caddyhttp/httpserver"
-	"github.com/lucas-clemente/quic-go/http3"
+	"github.com/lucas-clemente/quic-go/h2quic"
+	"github.com/mholt/caddy/caddyfile"
+	"github.com/mholt/caddy/caddyhttp/httpserver"
 
 	"golang.org/x/net/websocket"
 )
@@ -1759,7 +1759,7 @@ func TestQuic(t *testing.T) {
 			}
 			w.WriteHeader(200)
 		})
-		err = http3.ListenAndServeQUIC(
+		err = h2quic.ListenAndServeQUIC(
 			upstream,
 			path.Join(dir, "testdata", "fullchain.pem"), // TODO: Use a dynamically-generated, self-signed cert instead
 			path.Join(dir, "testdata", "privkey.pem"),

@@ -11,8 +11,6 @@ import (
 	"sync"
 	"time"
 
-	_ "net/http/pprof"
-
 	quic "github.com/lucas-clemente/quic-go"
 
 	"github.com/lucas-clemente/quic-go/h2quic"
@@ -24,13 +22,8 @@ func main() {
 	multipath := flag.Bool("m", false, "multipath")
 	output := flag.String("o", "", "logging output")
 	cache := flag.Bool("c", false, "cache handshake information")
-	skipVerify := flag.Bool("s", false, "skip TLS verification")
 	flag.Parse()
 	urls := flag.Args()
-
-	go func() {
-		log.Println(http.ListenAndServe("localhost:6060", nil))
-	}()
 
 	if *verbose {
 		utils.SetLogLevel(utils.LogLevelDebug)
@@ -47,19 +40,13 @@ func main() {
 		log.SetOutput(logfile)
 	}
 
-	var maxPathID uint8
-	if *multipath {
-		// Two path topology
-		maxPathID = 2
-	}
-
 	quicConfig := &quic.Config{
+		CreatePaths: *multipath,
 		CacheHandshake: *cache,
-		MaxPathID:      maxPathID,
 	}
 
 	hclient := &http.Client{
-		Transport: &h2quic.RoundTripper{QuicConfig: quicConfig, TLSClientConfig: &tls.Config{InsecureSkipVerify: *skipVerify}},
+		Transport: &h2quic.RoundTripper{QuicConfig: quicConfig, TLSClientConfig: &tls.Config{InsecureSkipVerify: true}},
 	}
 
 	var wg sync.WaitGroup

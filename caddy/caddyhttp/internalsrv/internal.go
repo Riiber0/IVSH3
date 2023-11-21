@@ -23,7 +23,7 @@ package internalsrv
 import (
 	"net/http"
 
-	"github.com/caddyserver/caddy/caddyhttp/httpserver"
+	"github.com/mholt/caddy/caddyhttp/httpserver"
 )
 
 // Internal middleware protects internal locations from external requests -

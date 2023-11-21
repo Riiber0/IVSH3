@@ -18,22 +18,6 @@ func Max(a, b int) int {
 	return a
 }
 
-// MaxUint returns the maximum of two UInts
-func MaxUint(a, b uint) uint {
-	if a < b {
-		return b
-	}
-	return a
-}
-
-// MaxUint returns the maximum of two UInts
-func MinUint(a, b uint) uint {
-	if a > b {
-		return b
-	}
-	return a
-}
-
 // MaxUint32 returns the maximum of two uint32
 func MaxUint32(a, b uint32) uint32 {
 	if a < b {

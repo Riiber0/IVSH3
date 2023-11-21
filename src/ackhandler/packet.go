@@ -15,8 +15,7 @@ type Packet struct {
 	Length          protocol.ByteCount
 	EncryptionLevel protocol.EncryptionLevel
 
-	SendTime   time.Time
-	Duplicated bool
+	SendTime time.Time
 }
 
 // GetFramesForRetransmission gets all the frames for retransmission
@@ -41,21 +40,15 @@ func (p *Packet) IsRetransmittable() bool {
 			return true
 		case *wire.RstStreamFrame:
 			return true
-		case *wire.MaxDataFrame:
-			return true
-		case *wire.MaxStreamDataFrame:
+		case *wire.WindowUpdateFrame:
 			return true
 		case *wire.BlockedFrame:
-			return true
-		case *wire.StreamBlockedFrame:
 			return true
 		case *wire.PingFrame:
 			return true
 		case *wire.GoawayFrame:
 			return true
 		case *wire.AddAddressFrame:
-			return true
-		case *wire.RemoveAddressFrame:
 			return true
 		case *wire.PathsFrame:
 			return true

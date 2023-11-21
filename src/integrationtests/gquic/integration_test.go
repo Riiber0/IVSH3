@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"os/exec"
+	"strconv"
 	"sync"
 
 	"github.com/lucas-clemente/quic-go/integrationtests/tools/testserver"
@@ -25,7 +26,7 @@ var _ = Describe("Integration tests", func() {
 			It("gets a simple file", func() {
 				command := exec.Command(
 					clientPath,
-					"--quic-version="+version.ToAltSvc(),
+					"--quic-version="+strconv.Itoa(int(version)),
 					"--host=127.0.0.1",
 					"--port="+testserver.Port(),
 					"https://quic.clemente.io/hello",
@@ -41,7 +42,7 @@ var _ = Describe("Integration tests", func() {
 			It("posts and reads a body", func() {
 				command := exec.Command(
 					clientPath,
-					"--quic-version="+version.ToAltSvc(),
+					"--quic-version="+strconv.Itoa(int(version)),
 					"--host=127.0.0.1",
 					"--port="+testserver.Port(),
 					"--body=foo",
@@ -58,7 +59,7 @@ var _ = Describe("Integration tests", func() {
 			It("gets a file", func() {
 				command := exec.Command(
 					clientPath,
-					"--quic-version="+version.ToAltSvc(),
+					"--quic-version="+strconv.Itoa(int(version)),
 					"--host=127.0.0.1",
 					"--port="+testserver.Port(),
 					"https://quic.clemente.io/prdata",
@@ -79,7 +80,7 @@ var _ = Describe("Integration tests", func() {
 						defer GinkgoRecover()
 						command := exec.Command(
 							clientPath,
-							"--quic-version="+version.ToAltSvc(),
+							"--quic-version="+strconv.Itoa(int(version)),
 							"--host=127.0.0.1",
 							"--port="+testserver.Port(),
 							"https://quic.clemente.io/prdata",

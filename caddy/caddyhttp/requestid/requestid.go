@@ -19,8 +19,8 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/caddyserver/caddy/caddyhttp/httpserver"
 	"github.com/google/uuid"
+	"github.com/mholt/caddy/caddyhttp/httpserver"
 )
 
 // Handler is a middleware handler

@@ -1,9 +1,6 @@
 package protocol
 
-import (
-	"fmt"
-	"math"
-)
+import "math"
 
 // A PacketNumber in QUIC
 type PacketNumber uint64
@@ -24,39 +21,6 @@ const (
 	PacketNumberLen6 PacketNumberLen = 6
 )
 
-// The PacketType is the Long Header Type (only used for the IETF draft header format)
-type PacketType uint8
-
-const (
-	// PacketTypeVersionNegotiation is the packet type of a Version Negotiation packet
-	PacketTypeVersionNegotiation PacketType = 1
-	// PacketTypeInitial is the packet type of a Initial packet
-	PacketTypeInitial PacketType = 2
-	// PacketTypeRetry is the packet type of a Retry packet
-	PacketTypeRetry PacketType = 3
-	// PacketTypeHandshake is the packet type of a Cleartext packet
-	PacketTypeHandshake PacketType = 4
-	// PacketType0RTT is the packet type of a 0-RTT packet
-	PacketType0RTT PacketType = 5
-)
-
-func (t PacketType) String() string {
-	switch t {
-	case PacketTypeVersionNegotiation:
-		return "Version Negotiation"
-	case PacketTypeInitial:
-		return "Initial"
-	case PacketTypeRetry:
-		return "Retry"
-	case PacketTypeHandshake:
-		return "Handshake"
-	case PacketType0RTT:
-		return "0-RTT Protected"
-	default:
-		return fmt.Sprintf("unknown packet type: %d", t)
-	}
-}
-
 // A ConnectionID in QUIC
 type ConnectionID uint64
 
@@ -66,10 +30,7 @@ type StreamID uint32
 // A PathID in QUIC
 type PathID uint8
 
-// An AddressID in QUIC
-type AddressID uint8
-
-// InitialPathID is the path ID of the initial path
+// Initial PathID
 const InitialPathID = 0
 
 // A ByteCount in QUIC
@@ -87,6 +48,12 @@ const MaxReceivePacketSize ByteCount = 1452
 // DefaultTCPMSS is the default maximum packet size used in the Linux TCP implementation.
 // Used in QUIC for congestion window computations in bytes.
 const DefaultTCPMSS ByteCount = 1460
+
+// InitialStreamFlowControlWindow is the initial stream-level flow control window for sending
+const InitialStreamFlowControlWindow ByteCount = (1 << 14) // 16 kB
+
+// InitialConnectionFlowControlWindow is the initial connection-level flow control window for sending
+const InitialConnectionFlowControlWindow ByteCount = (1 << 14) // 16 kB
 
 // ClientHelloMinimumSize is the minimum size the server expects an inchoate CHLO to have.
 const ClientHelloMinimumSize = 1024

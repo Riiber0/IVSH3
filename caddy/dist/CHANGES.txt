@@ -1,39 +1,5 @@
 CHANGES
 
-1.0.5 (January 15, 2020)
-- fastcgi: Ignore trailing spaces/dots in filename (important on Windows)
-- gzip: Prevent duplicated Vary header
-- log: Fix extra timestamp appearing at beginning
-- proxy: New tls_client property to specify CA client certs
-
-
-1.0.4 (November 15, 2019)
-- New -log-timestamps flag to disable timestamps in log entries
-- fastcgi: Path-insensitive extension check (important on Windows)
-- Updated dependencies: lego, certmagic, and quic-go
-- Several other minor improvements and fixes
-
-
-1.0.3 (August 14, 2019)
-- Hotfix for address parsing regression
-
-
-1.0.2 (August 13, 2019)
-- Built with Go 1.12.8 to patch HTTP/2 vulnerabilities
-- Static file server now serves pre-compressed Zstd files
-- websocket: Improvements for custom message types
-
-
-1.0.1 (July 2, 2019)
-- Move repo and module paths to github.com/caddyserver/caddy
-- New third-party plugin: pubsub
-- gzip: Automatically compress .wasm files
-- tls: Clean up locks from ACME operations on soft exit
-- tls: Deprecate 'max_certs' (use 'ask' instead)
-- tls: Improvements to on-demand TLS
-- Several other bug fixes
-
-
 1.0.0 (April 24, 2019)
 - Minor internal/linting improvements
 - EULA no longer applies

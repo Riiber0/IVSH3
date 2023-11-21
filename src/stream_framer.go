@@ -1,67 +1,44 @@
 package quic
 
 import (
-	"github.com/lucas-clemente/quic-go/internal/utils"
 	"net"
-	"runtime"
+	"time"
 
 	"github.com/lucas-clemente/quic-go/internal/flowcontrol"
 	"github.com/lucas-clemente/quic-go/internal/protocol"
+	"github.com/lucas-clemente/quic-go/internal/utils"
 	"github.com/lucas-clemente/quic-go/internal/wire"
-	"time"
 )
 
 type streamFramer struct {
-	streamsMap   *streamsMap
-	cryptoStream streamI
+	streamsMap *streamsMap
 
-	connFlowController flowcontrol.ConnectionFlowController
+	flowControlManager flowcontrol.FlowControlManager
 
-	retransmissionQueue         []*wire.StreamFrame
-	isInRetransmissionQueue     map[*wire.StreamFrame]bool
-	blockedFrameQueue           []wire.Frame
-	addAddressFrameQueue        []*wire.AddAddressFrame
-	removeAddressFrameQueue     []*wire.RemoveAddressFrame
-	lastBlockedSent             time.Time
-	currentRTT                  time.Duration
-	pathsFrame                  *wire.PathsFrame
-	protectReliableStreamFrames bool
+	retransmissionQueue  []*wire.StreamFrame
+	blockedFrameQueue    []*wire.BlockedFrame
+	addAddressFrameQueue []*wire.AddAddressFrame
+	closePathFrameQueue  []*wire.ClosePathFrame
+	pathsFrame           *wire.PathsFrame
 }
 
-func newStreamFramer(
-	cryptoStream streamI,
-	streamsMap *streamsMap,
-	cfc flowcontrol.ConnectionFlowController,
-	protectReliableStreamFrames bool,
-) *streamFramer {
+func newStreamFramer(streamsMap *streamsMap, flowControlManager flowcontrol.FlowControlManager) *streamFramer {
 	return &streamFramer{
-		streamsMap:                  streamsMap,
-		cryptoStream:                cryptoStream,
-		connFlowController:          cfc,
-		protectReliableStreamFrames: protectReliableStreamFrames,
-		isInRetransmissionQueue:     make(map[*wire.StreamFrame]bool),
+		streamsMap:         streamsMap,
+		flowControlManager: flowControlManager,
 	}
 }
 
 func (f *streamFramer) AddFrameForRetransmission(frame *wire.StreamFrame) {
-	// hotfix when using multipath when duplicated packets are lost: we avoid to queue twice the same frame
-	if _, present := f.isInRetransmissionQueue[frame]; !present {
-		f.retransmissionQueue = append(f.retransmissionQueue, frame)
-		f.isInRetransmissionQueue[frame] = true
-	}
+	f.retransmissionQueue = append(f.retransmissionQueue, frame)
 }
 
-func (f *streamFramer) PopStreamFrames(maxLen protocol.ByteCount, unreliableLenPenalty protocol.ByteCount) []*wire.StreamFrame {
-	fs, currentLen, containsUnreliable := f.maybePopFramesForRetransmission(maxLen, unreliableLenPenalty)
-	if containsUnreliable || (f.protectReliableStreamFrames && len(fs) > 0) {
-		// note: FECHeaderOverhead  is used to represent the presence of the ProtectedPayloadLength (2 bytes) and the FEC group (6 bytes) in the packet header when the packet contains unreliable stream frames
-		maxLen -= unreliableLenPenalty
-	}
-	streamFrames := f.maybePopNormalFrames(maxLen-currentLen, containsUnreliable || (f.protectReliableStreamFrames && len(fs) > 0), unreliableLenPenalty)
-	return append(fs, streamFrames...)
+func (f *streamFramer) PopStreamFrames(maxLen protocol.ByteCount) []*wire.StreamFrame {
+	fs, currentLen := f.maybePopFramesForRetransmission(maxLen)
+	return append(fs, f.maybePopNormalFrames(maxLen-currentLen)...)
 }
 
-func (f *streamFramer) PopBlockedFrame() wire.Frame {
+func (f *streamFramer) PopBlockedFrame() *wire.BlockedFrame {
 	if len(f.blockedFrameQueue) == 0 {
 		return nil
 	}
@@ -70,8 +47,8 @@ func (f *streamFramer) PopBlockedFrame() wire.Frame {
 	return frame
 }
 
-func (f *streamFramer) AddAddAddressForTransmission(addrID protocol.AddressID, addr net.UDPAddr, backup bool) {
-	f.addAddressFrameQueue = append(f.addAddressFrameQueue, &wire.AddAddressFrame{AddrID: addrID, Addr: addr, Backup: backup})
+func (f *streamFramer) AddAddressForTransmission(ipVersion uint8, addr net.UDPAddr) {
+	f.addAddressFrameQueue = append(f.addAddressFrameQueue, &wire.AddAddressFrame{IPVersion: ipVersion, Addr: addr})
 }
 
 func (f *streamFramer) PopAddAddressFrame() *wire.AddAddressFrame {
@@ -83,39 +60,22 @@ func (f *streamFramer) PopAddAddressFrame() *wire.AddAddressFrame {
 	return frame
 }
 
-func (f *streamFramer) AddRemoveAddressForTransmission(addrID protocol.AddressID) {
-	f.removeAddressFrameQueue = append(f.removeAddressFrameQueue, &wire.RemoveAddressFrame{AddrID: addrID})
-}
-
-func (f *streamFramer) PopRemoveAddressFrame() *wire.RemoveAddressFrame {
-	if len(f.removeAddressFrameQueue) == 0 {
-		return nil
-	}
-	frame := f.removeAddressFrameQueue[0]
-	f.removeAddressFrameQueue = f.removeAddressFrameQueue[1:]
-	return frame
-}
-
-// AddPathsFrameForTransmission, MUST hold pconnsLock and pathsLock!
 func (f *streamFramer) AddPathsFrameForTransmission(s *session) {
-	pathInfos := make(map[protocol.PathID]wire.PathInfoSection)
-	for pathID, pth := range s.paths {
-		if !pth.active.Get() {
-			continue
+	s.pathsLock.RLock()
+	defer s.pathsLock.RUnlock()
+	paths := make([]protocol.PathID, len(s.paths))
+	remoteRTTs := make([]time.Duration, len(s.paths))
+	i := 0
+	for pathID := range s.paths {
+		paths[i] = pathID
+		if s.paths[pathID].potentiallyFailed.Get() {
+			remoteRTTs[i] = time.Hour
+		} else {
+			remoteRTTs[i] = s.paths[pathID].rttStats.SmoothedRTT()
 		}
-		addr := pth.conn.LocalAddr()
-		addrID, ok := s.pathManager.pconnMgr.GetAddrIDOf(addr)
-		if !ok {
-			// Maybe the interface just disappeared, so don't announce that path
-			println("unknown Address ID of " + addr.String())
-			continue
-		}
-		pathInfos[pathID] = wire.PathInfoSection{
-			AddrID: addrID,
-			RTT:    pth.rttStats.SmoothedRTT(),
-		}
+		i++
 	}
-	f.pathsFrame = &wire.PathsFrame{ActivePaths: protocol.PathID(len(pathInfos) - 1), PathInfos: pathInfos}
+	f.pathsFrame = &wire.PathsFrame{MaxNumPaths: 255, NumPaths: uint8(len(paths)), PathIDs: paths, RemoteRTTs: remoteRTTs}
 }
 
 func (f *streamFramer) PopPathsFrame() *wire.PathsFrame {
@@ -127,68 +87,49 @@ func (f *streamFramer) PopPathsFrame() *wire.PathsFrame {
 	return frame
 }
 
+func (f *streamFramer) AddClosePathFrameForTransmission(closePathFrame *wire.ClosePathFrame) {
+	f.closePathFrameQueue = append(f.closePathFrameQueue, closePathFrame)
+}
+
+func (f *streamFramer) PopClosePathFrame() *wire.ClosePathFrame {
+	if len(f.closePathFrameQueue) == 0 {
+		return nil
+	}
+	frame := f.closePathFrameQueue[0]
+	f.closePathFrameQueue = f.closePathFrameQueue[1:]
+	return frame
+}
+
 func (f *streamFramer) HasFramesForRetransmission() bool {
 	return len(f.retransmissionQueue) > 0
 }
 
-func (f *streamFramer) HasFramesToSend() bool {
-	// if f.streamsMap == nil || f.streamsMap.openStreams == nil {
-	//	return false
-	// }
-
-	for _, id := range f.streamsMap.openStreams {
-		//if f.streamsMap.streams == nil {
-		//return false
-		//}
-
-		if s, ok := f.streamsMap.GetStream(id); ok && s.LenOfDataForWriting() > 0 {
-			return true
-		}
-	}
-	return false
-}
-
 func (f *streamFramer) HasCryptoStreamFrame() bool {
-	return f.cryptoStream.LenOfDataForWriting() > 0
+	// TODO(#657): Flow control
+	cs, _ := f.streamsMap.GetOrOpenStream(1)
+	return cs.lenOfDataForWriting() > 0
 }
 
 // TODO(lclemente): This is somewhat duplicate with the normal path for generating frames.
+// TODO(#657): Flow control
 func (f *streamFramer) PopCryptoStreamFrame(maxLen protocol.ByteCount) *wire.StreamFrame {
 	if !f.HasCryptoStreamFrame() {
 		return nil
 	}
+	cs, _ := f.streamsMap.GetOrOpenStream(1)
 	frame := &wire.StreamFrame{
-		StreamID: f.cryptoStream.StreamID(),
-		Offset:   f.cryptoStream.GetWriteOffset(),
+		StreamID: 1,
+		Offset:   cs.writeOffset,
 	}
 	frameHeaderBytes, _ := frame.MinLength(protocol.VersionWhatever) // can never error
-	frame.Data = f.cryptoStream.GetDataForWriting(maxLen - frameHeaderBytes)
+	frame.Data = cs.getDataForWriting(maxLen - frameHeaderBytes)
 	return frame
 }
 
-func (f *streamFramer) maybePopFramesForRetransmission(maxTotalLen protocol.ByteCount, unreliableLenPenalty protocol.ByteCount) (res []*wire.StreamFrame, currentLen protocol.ByteCount, containsUnreliable bool) {
-	containsUnreliable = false
-
+func (f *streamFramer) maybePopFramesForRetransmission(maxLen protocol.ByteCount) (res []*wire.StreamFrame, currentLen protocol.ByteCount) {
 	for len(f.retransmissionQueue) > 0 {
 		frame := f.retransmissionQueue[0]
-		if frame.DeadlineExpired() {
-			delete(f.isInRetransmissionQueue, frame)
-			f.retransmissionQueue = f.retransmissionQueue[1:]
-			continue
-		} else if frame.Unreliable || f.protectReliableStreamFrames {
-			if maxTotalLen <= unreliableLenPenalty {
-				break
-			}
-		}
 		frame.DataLenPresent = true
-
-		// TODO: possible underflow when decreasing maxLen
-		if (f.protectReliableStreamFrames || frame.Unreliable) && !containsUnreliable { // remove 8 bytes of maxLen if frame is unreliable, and ensure that we only do this once
-			containsUnreliable = true
-			maxTotalLen -= unreliableLenPenalty
-		}
-
-		maxLen := maxTotalLen - currentLen
 
 		frameHeaderLen, _ := frame.MinLength(protocol.VersionWhatever) // can never error
 		if currentLen+frameHeaderLen >= maxLen {
@@ -197,143 +138,93 @@ func (f *streamFramer) maybePopFramesForRetransmission(maxTotalLen protocol.Byte
 
 		currentLen += frameHeaderLen
 
-		str, err := f.streamsMap.GetOrOpenStream(frame.StreamID)
-		if err != nil {
-			panic(err)
-		}
-		if str != nil && str.GetMessageMode() && frame.DataLen() > maxLen-currentLen {
-			return
-		}
-
-		splitFrame := maybeSplitOffFrame(frame, maxTotalLen-currentLen)
+		splitFrame := maybeSplitOffFrame(frame, maxLen-currentLen)
 		if splitFrame != nil { // StreamFrame was split
 			res = append(res, splitFrame)
 			frameLen := splitFrame.DataLen()
 			currentLen += frameLen
 			// XXX (QDC): to avoid rewriting a lot of tests...
-			if f.streamsMap != nil {
-				str, err := f.streamsMap.GetOrOpenStream(frame.StreamID)
-				if err != nil {
-					panic(err)
-				}
-				str2, ok := str.(*stream)
-				if ok && str2.flowController != nil {
-					str2.AddBytesRetrans(frameLen)
-				}
+			if f.flowControlManager != nil {
+				f.flowControlManager.AddBytesRetrans(splitFrame.StreamID, frameLen)
 			}
 			break
 		}
 
-		delete(f.isInRetransmissionQueue, f.retransmissionQueue[0])
 		f.retransmissionQueue = f.retransmissionQueue[1:]
 		res = append(res, frame)
 		frameLen := frame.DataLen()
 		currentLen += frameLen
 		// XXX (QDC): to avoid rewriting a lot of tests...
-		str, err = f.streamsMap.GetOrOpenStream(frame.StreamID)
-		if err != nil {
-			panic(err)
-		}
-		str2, ok := str.(*stream)
-		if ok && str2.flowController != nil {
-			str2.AddBytesRetrans(frameLen)
+		if f.flowControlManager != nil {
+			f.flowControlManager.AddBytesRetrans(frame.StreamID, frameLen)
 		}
 	}
 	return
 }
 
-func (f *streamFramer) maybePopNormalFrames(maxTotalLen protocol.ByteCount, containsUnreliable bool, unreliableLenPenalty protocol.ByteCount) (res []*wire.StreamFrame) {
+func (f *streamFramer) maybePopNormalFrames(maxBytes protocol.ByteCount) (res []*wire.StreamFrame) {
 	frame := &wire.StreamFrame{DataLenPresent: true}
 	var currentLen protocol.ByteCount
-	fn := func(s streamI) (bool, error) {
-		if s == nil {
+
+	fn := func(s *stream) (bool, error) {
+		if s == nil || s.streamID == 1 /* crypto stream is handled separately */ {
 			return true, nil
 		}
 
-		// added by michelfra: this if
-		if f.protectReliableStreamFrames || s.IsUnreliable() {
-			if !containsUnreliable { // remove bytes of maxLen if frame is unreliable, and ensure that we only do this once
-				if maxTotalLen <= unreliableLenPenalty {
-					// Not enough space to have the additional header bytes of a FEC-protected packet. Continue to find a Reliable Stream
-					return true, nil
-				}
-				// remove the two + six bytes that will be taken by the header for the FECProtectedPayloadLength and FECBlockNumber fields
-				maxTotalLen -= unreliableLenPenalty
-				containsUnreliable = true
-			}
-		}
-
-		frame.StreamID = s.StreamID()
-		frame.Offset = s.GetWriteOffset()
-
-		frame.Unreliable = s.IsUnreliable()
-		if s.IsUnreliable() {
-			frame.RetransmitDeadline = s.GetRetransmissionDeadLine()
-		}
-
+		frame.StreamID = s.streamID
 		// not perfect, but thread-safe since writeOffset is only written when getting data
+		frame.Offset = s.writeOffset
 		frameHeaderBytes, _ := frame.MinLength(protocol.VersionWhatever) // can never error
-		if currentLen+frameHeaderBytes > maxTotalLen {
+		if currentLen+frameHeaderBytes > maxBytes {
 			return false, nil // theoretically, we could find another stream that fits, but this is quite unlikely, so we stop here
 		}
-		maxLen := maxTotalLen - currentLen - frameHeaderBytes
+		maxLen := maxBytes - currentLen - frameHeaderBytes
 
-		// ensure we do not violate the flow control
-		maxLen = utils.MinByteCount(f.connFlowController.SendWindowSize(), utils.MinByteCount(maxLen, s.GetSendWindowSize()))
-		var data []byte
-
-		ignoreStream := false
-		if s.GetMessageMode() {
-			if s.LenOfDataForWriting() <= maxLen && s.LenOfDataForWriting() > 0 {
-				data = s.GetDataForWriting(maxLen)
-				ignoreStream = data == nil
-			}
-		} else if s.LenOfDataForWriting() > 0 {
-			data = s.GetDataForWriting(maxLen)
+		var sendWindowSize protocol.ByteCount
+		lenStreamData := s.lenOfDataForWriting()
+		if lenStreamData != 0 {
+			sendWindowSize, _ = f.flowControlManager.SendWindowSize(s.streamID)
+			maxLen = utils.MinByteCount(maxLen, sendWindowSize)
 		}
 
-		runtime.Gosched() // ensure that the Close() occurs before shouldSendFin
+		if maxLen == 0 {
+			return true, nil
+		}
 
-		if ignoreStream {
-			//copy paste from below
-			if time.Now().Sub(f.lastBlockedSent) >= f.currentRTT/time.Duration(100) {
-				if !frame.FinBit && s.IsFlowControlBlocked() {
-					f.lastBlockedSent = time.Now()
-					f.blockedFrameQueue = append(f.blockedFrameQueue, &wire.StreamBlockedFrame{StreamID: s.StreamID()})
-				}
-				if f.connFlowController.IsBlocked() {
-					f.lastBlockedSent = time.Now()
-					f.blockedFrameQueue = append(f.blockedFrameQueue, &wire.BlockedFrame{})
-				}
-			}
+		var data []byte
+		if lenStreamData != 0 {
+			// Only getDataForWriting() if we didn't have data earlier, so that we
+			// don't send without FC approval (if a Write() raced).
+			data = s.getDataForWriting(maxLen)
 		}
 
 		// This is unlikely, but check it nonetheless, the scheduler might have jumped in. Seems to happen in ~20% of cases in the tests.
-		shouldSendFin := s.ShouldSendFin()
+		shouldSendFin := s.shouldSendFin()
 		if data == nil && !shouldSendFin {
 			return true, nil
 		}
 
-		if s.ShouldSendFin() {
+		if shouldSendFin {
 			frame.FinBit = true
-			frame.Unreliable = false
-			s.SentFin()
+			s.sentFin()
 		}
 
 		frame.Data = data
+		f.flowControlManager.AddBytesSent(s.streamID, protocol.ByteCount(len(data)))
 
 		// Finally, check if we are now FC blocked and should queue a BLOCKED frame
-		if !frame.FinBit && s.IsFlowControlBlocked() {
-			f.blockedFrameQueue = append(f.blockedFrameQueue, &wire.StreamBlockedFrame{StreamID: s.StreamID()})
-		}
-		if f.connFlowController.IsBlocked() {
-			f.blockedFrameQueue = append(f.blockedFrameQueue, &wire.BlockedFrame{})
+		if f.flowControlManager.RemainingConnectionWindowSize() == 0 {
+			// We are now connection-level FC blocked
+			f.blockedFrameQueue = append(f.blockedFrameQueue, &wire.BlockedFrame{StreamID: 0})
+		} else if !frame.FinBit && sendWindowSize-frame.DataLen() == 0 {
+			// We are now stream-level FC blocked
+			f.blockedFrameQueue = append(f.blockedFrameQueue, &wire.BlockedFrame{StreamID: s.StreamID()})
 		}
 
 		res = append(res, frame)
 		currentLen += frameHeaderBytes + frame.DataLen()
 
-		if currentLen == maxTotalLen {
+		if currentLen == maxBytes {
 			return false, nil
 		}
 
@@ -342,6 +233,7 @@ func (f *streamFramer) maybePopNormalFrames(maxTotalLen protocol.ByteCount, cont
 	}
 
 	f.streamsMap.RoundRobinIterate(fn)
+
 	return
 }
 
@@ -362,6 +254,5 @@ func maybeSplitOffFrame(frame *wire.StreamFrame, n protocol.ByteCount) *wire.Str
 		Offset:         frame.Offset,
 		Data:           frame.Data[:n],
 		DataLenPresent: frame.DataLenPresent,
-		Unreliable:     frame.Unreliable,
 	}
 }

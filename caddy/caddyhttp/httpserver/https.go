@@ -18,10 +18,9 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"strconv"
 
-	"github.com/caddyserver/caddy"
-	"github.com/caddyserver/caddy/caddytls"
+	"github.com/mholt/caddy"
+	"github.com/mholt/caddy/caddytls"
 	"github.com/mholt/certmagic"
 )
 
@@ -71,7 +70,7 @@ func activateHTTPS(cctx caddy.Context) error {
 		certCache, ok := ctx.instance.Storage[caddytls.CertCacheInstStorageKey].(*certmagic.Cache)
 		ctx.instance.StorageMu.RUnlock()
 		if ok && certCache != nil {
-			err = certCache.RenewManagedCertificates()
+			err = certCache.RenewManagedCertificates(operatorPresent)
 			if err != nil {
 				return err
 			}
@@ -126,7 +125,7 @@ func enableAutoHTTPS(configs []*SiteConfig, loadCertificates bool) error {
 			cfg.TLS.Enabled &&
 			(!cfg.TLS.Manual || cfg.TLS.Manager.OnDemand != nil) &&
 			cfg.Addr.Host != "localhost" {
-			cfg.Addr.Port = strconv.Itoa(certmagic.HTTPSPort)
+			cfg.Addr.Port = HTTPSPort
 		}
 	}
 	return nil
@@ -139,12 +138,10 @@ func enableAutoHTTPS(configs []*SiteConfig, loadCertificates bool) error {
 // only set up redirects for configs that qualify. It returns the updated list of
 // all configs.
 func makePlaintextRedirects(allConfigs []*SiteConfig) []*SiteConfig {
-	httpPort := strconv.Itoa(certmagic.HTTPPort)
-	httpsPort := strconv.Itoa(certmagic.HTTPSPort)
 	for i, cfg := range allConfigs {
 		if cfg.TLS.Managed &&
-			!hostHasOtherPort(allConfigs, i, httpPort) &&
-			(cfg.Addr.Port == httpsPort || !hostHasOtherPort(allConfigs, i, httpsPort)) {
+			!hostHasOtherPort(allConfigs, i, HTTPPort) &&
+			(cfg.Addr.Port == HTTPSPort || !hostHasOtherPort(allConfigs, i, HTTPSPort)) {
 			allConfigs = append(allConfigs, redirPlaintextHost(cfg))
 		}
 	}
@@ -170,10 +167,10 @@ func hostHasOtherPort(allConfigs []*SiteConfig, thisConfigIdx int, otherPort str
 // redirPlaintextHost returns a new plaintext HTTP configuration for
 // a virtualHost that simply redirects to cfg, which is assumed to
 // be the HTTPS configuration. The returned configuration is set
-// to listen on certmagic.HTTPPort. The TLS field of cfg must not be nil.
+// to listen on HTTPPort. The TLS field of cfg must not be nil.
 func redirPlaintextHost(cfg *SiteConfig) *SiteConfig {
 	redirPort := cfg.Addr.Port
-	if redirPort == strconv.Itoa(certmagic.HTTPSPort) {
+	if redirPort == HTTPSPort {
 		// By default, HTTPSPort should be DefaultHTTPSPort,
 		// which of course doesn't need to be explicitly stated
 		// in the Location header. Even if HTTPSPort is changed
@@ -213,7 +210,7 @@ func redirPlaintextHost(cfg *SiteConfig) *SiteConfig {
 	}
 
 	host := cfg.Addr.Host
-	port := strconv.Itoa(certmagic.HTTPPort)
+	port := HTTPPort
 	addr := net.JoinHostPort(host, port)
 
 	return &SiteConfig{

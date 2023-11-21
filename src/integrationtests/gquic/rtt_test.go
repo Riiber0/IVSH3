@@ -32,7 +32,7 @@ var _ = Describe("non-zero RTT", func() {
 
 		command := exec.Command(
 			clientPath,
-			"--quic-version="+version.ToAltSvc(),
+			"--quic-version="+strconv.Itoa(int(version)),
 			"--host=127.0.0.1",
 			"--port="+strconv.Itoa(proxy.LocalPort()),
 			"https://quic.clemente.io/prdata",

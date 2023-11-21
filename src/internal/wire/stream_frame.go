@@ -8,19 +8,15 @@ import (
 	"github.com/lucas-clemente/quic-go/internal/protocol"
 	"github.com/lucas-clemente/quic-go/internal/utils"
 	"github.com/lucas-clemente/quic-go/qerr"
-	"time"
 )
 
 // A StreamFrame of QUIC
 type StreamFrame struct {
-	StreamID           protocol.StreamID
-	FinBit             bool
-	DataLenPresent     bool
-	Offset             protocol.ByteCount
-	Data               []byte
-	Unreliable         bool
-	RetransmitDeadline time.Duration
-	TimeSent           time.Time
+	StreamID       protocol.StreamID
+	FinBit         bool
+	DataLenPresent bool
+	Offset         protocol.ByteCount
+	Data           []byte
 }
 
 var (
@@ -65,11 +61,8 @@ func ParseStreamFrame(r *bytes.Reader, version protocol.VersionNumber) (*StreamF
 		}
 	}
 
-	// shortcut to prevent the unneccessary allocation of dataLen bytes
-	// if the dataLen is larger than the remaining length of the packet
-	// reading the packet contents would result in EOF when attempting to READ
-	if int(dataLen) > r.Len() {
-		return nil, io.EOF
+	if dataLen > uint16(protocol.MaxPacketSize) {
+		return nil, qerr.Error(qerr.InvalidStreamData, "data len too large")
 	}
 
 	if !frame.DataLenPresent {
@@ -79,7 +72,6 @@ func ParseStreamFrame(r *bytes.Reader, version protocol.VersionNumber) (*StreamF
 	if dataLen != 0 {
 		frame.Data = make([]byte, dataLen)
 		if _, err := io.ReadFull(r, frame.Data); err != nil {
-			// this should never happen, since we already checked the dataLen earlier
 			return nil, err
 		}
 	}
@@ -93,32 +85,10 @@ func ParseStreamFrame(r *bytes.Reader, version protocol.VersionNumber) (*StreamF
 	return frame, nil
 }
 
-// ParseUnreliableStreamFrame reads a unreliable stream frame. The type byte must not have been read yet.
-func ParseUnreliableStreamFrame(r *bytes.Reader, version protocol.VersionNumber) (*StreamFrame, error) {
-
-	// Read the typeByte
-	_, err := r.ReadByte()
-	if err != nil {
-		return nil, err
-	}
-
-	frame, err := ParseStreamFrame(r, version)
-	if err == nil {
-		frame.Unreliable = true
-	}
-	return frame, err
-}
-
 // WriteStreamFrame writes a stream frame.
 func (f *StreamFrame) Write(b *bytes.Buffer, version protocol.VersionNumber) error {
 	if len(f.Data) == 0 && !f.FinBit {
 		return errors.New("StreamFrame: attempting to write empty frame without FIN")
-	}
-
-	if f.Unreliable {
-		// write the Unreliable Stream frame
-		b.WriteByte(0x0b)
-		// we still write the original typeByte afterwards as it is still used when parsing a Unreliable Stream frame
 	}
 
 	typeByte := uint8(0x80) // sets the leftmost bit to 1
@@ -177,9 +147,6 @@ func (f *StreamFrame) Write(b *bytes.Buffer, version protocol.VersionNumber) err
 	}
 
 	b.Write(f.Data)
-	if f.Unreliable && f.TimeSent.IsZero() {
-		f.TimeSent = time.Now()
-	}
 	return nil
 }
 
@@ -226,17 +193,10 @@ func (f *StreamFrame) MinLength(protocol.VersionNumber) (protocol.ByteCount, err
 	if f.DataLenPresent {
 		length += 2
 	}
-	if f.Unreliable {
-		length++
-	}
 	return length, nil
 }
 
 // DataLen gives the length of data in bytes
 func (f *StreamFrame) DataLen() protocol.ByteCount {
 	return protocol.ByteCount(len(f.Data))
-}
-
-func (f *StreamFrame) DeadlineExpired() bool {
-	return f.Unreliable && time.Now().Sub(f.TimeSent) > f.RetransmitDeadline
 }

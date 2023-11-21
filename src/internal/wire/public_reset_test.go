@@ -15,7 +15,7 @@ var _ = Describe("public reset", func() {
 		It("writes public reset packets", func() {
 			Expect(WritePublicReset(0xdeadbeef, 0x8badf00d, 0xdecafbad)).To(Equal([]byte{
 				0x0a,
-				0x0, 0x0, 0x0, 0x0, 0xde, 0xad, 0xbe, 0xef,
+				0xef, 0xbe, 0xad, 0xde, 0x00, 0x00, 0x00, 0x00,
 				'P', 'R', 'S', 'T',
 				0x02, 0x00, 0x00, 0x00,
 				'R', 'N', 'O', 'N',
@@ -73,14 +73,13 @@ var _ = Describe("public reset", func() {
 			Expect(err).To(MatchError("invalid RNON tag"))
 		})
 
-		It("accepts packets missing the rejected packet number", func() {
+		It("rejects packets missing the rejected packet number", func() {
 			data := map[handshake.Tag][]byte{
 				handshake.TagRNON: []byte{0xde, 0xad, 0xbe, 0xef, 0xca, 0xfe, 0x13, 0x37},
 			}
 			handshake.HandshakeMessage{Tag: handshake.TagPRST, Data: data}.Write(b)
-			pr, err := ParsePublicReset(bytes.NewReader(b.Bytes()))
-			Expect(err).ToNot(HaveOccurred())
-			Expect(pr.Nonce).To(Equal(uint64(0x3713fecaefbeadde)))
+			_, err := ParsePublicReset(bytes.NewReader(b.Bytes()))
+			Expect(err).To(MatchError("RSEQ missing"))
 		})
 
 		It("rejects packets with a wrong length rejected packet number", func() {

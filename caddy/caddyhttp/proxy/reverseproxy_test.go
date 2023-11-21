@@ -24,7 +24,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lucas-clemente/quic-go/http3"
+	"github.com/lucas-clemente/quic-go/h2quic"
 )
 
 const (
@@ -113,7 +113,7 @@ func TestReverseProxyWithOwnCACertificates(t *testing.T) {
 		if transport.TLSClientConfig.RootCAs == nil {
 			t.Errorf("RootCAs not set on TLSClientConfig.")
 		}
-	} else if transport, ok := ups.ReverseProxy.Transport.(*http3.RoundTripper); ok {
+	} else if transport, ok := ups.ReverseProxy.Transport.(*h2quic.RoundTripper); ok {
 		if transport.TLSClientConfig.RootCAs == nil {
 			t.Errorf("RootCAs not set on TLSClientConfig.")
 		}

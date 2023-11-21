@@ -25,21 +25,18 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/signal"
 	"path"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"time"
 
-	"github.com/caddyserver/caddy"
-	"github.com/caddyserver/caddy/caddyhttp/staticfiles"
-	"github.com/caddyserver/caddy/caddytls"
-	"github.com/caddyserver/caddy/telemetry"
-	"github.com/lucas-clemente/quic-go"
+	quic "github.com/lucas-clemente/quic-go"
 	"github.com/lucas-clemente/quic-go/h2quic"
-	"github.com/lucas-clemente/quic-go/logger"
+	"github.com/mholt/caddy"
+	"github.com/mholt/caddy/caddyhttp/staticfiles"
+	"github.com/mholt/caddy/caddytls"
+	"github.com/mholt/caddy/telemetry"
 )
 
 // Server is the HTTP server implementation.
@@ -108,42 +105,10 @@ func NewServer(addr string, group []*SiteConfig) (*Server, error) {
 	if s.Server.TLSConfig != nil {
 		// enable QUIC if desired (requires HTTP/2)
 		if HTTP2 && QUIC {
-			var maxPathID uint8 = 0
-			if MPQUIC {
-				maxPathID = 2
-			}
-
-			fs, rc := quic.FECConfigFromString(FECConfig)
-
-			config := quic.Config{
-				MaxPathID:                   maxPathID,
-				SchedulingSchemeName:        MPQUIC_SCHED,
-				CongestionControlName:       MPQUIC_CC,
-				FECScheme:                   fs,
-				RedundancyController:        rc,
-				ProtectReliableStreamFrames: FECEnable,
-				DisableFECRecoveredFrames:   false,
-			}
-
-			if QUIC_EXPERIMENT_LOGGING {
-				os.MkdirAll("server_quic_log/", 0777)
-				prefix := "server_quic_log/" + MPQUIC_SCHED + "_" + FECConfig + "_" + strconv.FormatInt(time.Now().Unix(), 10)
-				logger.InitExperimentationLogger(prefix)
-				c := make(chan os.Signal, 1)
-				signal.Notify(c, os.Interrupt)
-				go func() {
-					for range c {
-						fmt.Println("flushing log (lol) and quitting...")
-						logger.FlushExperimentationLogger()
-					}
-				}()
-			}
-
 			s.quicServer = &h2quic.Server{
 				Server:     s.Server,
-				QuicConfig: &config,
+				QuicConfig: &quic.Config{CreatePaths: useMP},
 			}
-			s.Server.Handler = s.wrapWithSvcHeaders(s.Server.Handler)
 		}
 
 		// wrap the HTTP handler with a handler that does MITM detection
@@ -592,20 +557,16 @@ type tcpKeepAliveListener struct {
 }
 
 // Accept accepts the connection with a keep-alive enabled.
-func (ln tcpKeepAliveListener) Accept() (net.Conn, error) {
+func (ln tcpKeepAliveListener) Accept() (c net.Conn, err error) {
 	tc, err := ln.AcceptTCP()
 	if err != nil {
-		return nil, err
+		return
 	}
 	if err = tc.SetKeepAlive(true); err != nil {
-		return nil, err
+		return
 	}
-	// OpenBSD has no user-settable per-socket TCP keepalive
-	// https://github.com/caddyserver/caddy/pull/2787
-	if runtime.GOOS != "openbsd" {
-		if err = tc.SetKeepAlivePeriod(3 * time.Minute); err != nil {
-			return nil, err
-		}
+	if err = tc.SetKeepAlivePeriod(3 * time.Minute); err != nil {
+		return
 	}
 	return tc, nil
 }

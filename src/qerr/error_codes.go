@@ -190,9 +190,4 @@ const (
 	ConnectionMigrationNoNewNetwork ErrorCode = 83
 	// Network changed, but connection had one or more non-migratable streams.
 	ConnectionMigrationNonMigratableStream ErrorCode = 84
-
-	// We received a FEC_FRAME with no data.
-	EmptyFECFrame ErrorCode = 90
-	// We received a Unreliable STREAM FRAME for stream ID 1
-	UnreliableStreamFrameOnStream1 ErrorCode = 89
 )

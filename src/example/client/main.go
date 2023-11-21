@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"crypto/tls"
 	"flag"
 	"io"
 	"log"
@@ -13,7 +12,6 @@ import (
 	quic "github.com/lucas-clemente/quic-go"
 
 	"github.com/lucas-clemente/quic-go/h2quic"
-	"github.com/lucas-clemente/quic-go/internal/protocol"
 	"github.com/lucas-clemente/quic-go/internal/utils"
 )
 
@@ -21,7 +19,6 @@ func main() {
 	verbose := flag.Bool("v", false, "verbose")
 	multipath := flag.Bool("m", false, "multipath")
 	output := flag.String("o", "", "logging output")
-	skipVerify := flag.Bool("s", false, "skip TLS verification")
 	flag.Parse()
 	urls := flag.Args()
 
@@ -41,22 +38,12 @@ func main() {
 		log.SetOutput(logfile)
 	}
 
-	var maxPathID uint8
-	if *multipath {
-		// Two path topology
-		maxPathID = 2
-	}
-
-	quicConfig := quic.Config{
-		MaxPathID:        maxPathID,
-		SchedulingScheme: protocol.SchedRR,
+	quicConfig := &quic.Config{
+		CreatePaths: *multipath,
 	}
 
 	hclient := &http.Client{
-		Transport: &h2quic.RoundTripper{
-			QuicConfig:      &quicConfig,
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: *skipVerify},
-		},
+		Transport: &h2quic.RoundTripper{QuicConfig: quicConfig},
 	}
 
 	var wg sync.WaitGroup

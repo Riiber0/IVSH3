@@ -28,15 +28,12 @@ func (f *StopWaitingFrame) Write(b *bytes.Buffer, version protocol.VersionNumber
 	if f.PacketNumber == protocol.PacketNumber(0) {
 		return errPacketNumberNotSet
 	}
-
-	var leastUnackedDelta uint64
-	if f.LeastUnacked < f.PacketNumber {
-		leastUnackedDelta = uint64(f.PacketNumber - f.LeastUnacked)
-	} else {
-		//return errLeastUnackedHigherThanPacketNumber
+	if f.LeastUnacked > f.PacketNumber {
+		return errLeastUnackedHigherThanPacketNumber
 	}
 
 	b.WriteByte(0x06)
+	leastUnackedDelta := uint64(f.PacketNumber - f.LeastUnacked)
 	switch f.PacketNumberLen {
 	case protocol.PacketNumberLen1:
 		b.WriteByte(uint8(leastUnackedDelta))
@@ -77,7 +74,6 @@ func ParseStopWaitingFrame(r *bytes.Reader, packetNumber protocol.PacketNumber, 
 		return nil, err
 	}
 	if leastUnackedDelta >= uint64(packetNumber) {
-		utils.Debugf("LeastUnackedDelta: %d, PacketNumber: %d\n", leastUnackedDelta, packetNumber)
 		return nil, qerr.Error(qerr.InvalidStopWaitingData, "invalid LeastUnackedDelta")
 	}
 	frame.LeastUnacked = protocol.PacketNumber(uint64(packetNumber) - leastUnackedDelta)

@@ -10,14 +10,15 @@ const (
 	serverExporterLabel = "EXPORTER-QUIC server 1-RTT Secret"
 )
 
-// A TLSExporter gets the negotiated ciphersuite and computes exporter
-type TLSExporter interface {
+// MintController is an interface that bundles all methods needed to interact with mint
+type MintController interface {
+	Handshake() mint.Alert
 	GetCipherSuite() mint.CipherSuiteParams
 	ComputeExporter(label string, context []byte, keyLength int) ([]byte, error)
 }
 
 // DeriveAESKeys derives the AES keys and creates a matching AES-GCM AEAD instance
-func DeriveAESKeys(tls TLSExporter, pers protocol.Perspective) (AEAD, error) {
+func DeriveAESKeys(mc MintController, pers protocol.Perspective) (AEAD, error) {
 	var myLabel, otherLabel string
 	if pers == protocol.PerspectiveClient {
 		myLabel = clientExporterLabel
@@ -26,24 +27,24 @@ func DeriveAESKeys(tls TLSExporter, pers protocol.Perspective) (AEAD, error) {
 		myLabel = serverExporterLabel
 		otherLabel = clientExporterLabel
 	}
-	myKey, myIV, err := computeKeyAndIV(tls, myLabel)
+	myKey, myIV, err := computeKeyAndIV(mc, myLabel)
 	if err != nil {
 		return nil, err
 	}
-	otherKey, otherIV, err := computeKeyAndIV(tls, otherLabel)
+	otherKey, otherIV, err := computeKeyAndIV(mc, otherLabel)
 	if err != nil {
 		return nil, err
 	}
 	return NewAEADAESGCM(otherKey, myKey, otherIV, myIV)
 }
 
-func computeKeyAndIV(tls TLSExporter, label string) (key, iv []byte, err error) {
-	cs := tls.GetCipherSuite()
-	secret, err := tls.ComputeExporter(label, nil, cs.Hash.Size())
+func computeKeyAndIV(mc MintController, label string) (key, iv []byte, err error) {
+	cs := mc.GetCipherSuite()
+	secret, err := mc.ComputeExporter(label, nil, cs.Hash.Size())
 	if err != nil {
 		return nil, nil, err
 	}
-	key = mint.HkdfExpandLabel(cs.Hash, secret, "key", nil, cs.KeyLengths["key"])
-	iv = mint.HkdfExpandLabel(cs.Hash, secret, "iv", nil, cs.KeyLengths["iv"])
+	key = mint.HkdfExpandLabel(cs.Hash, secret, "key", nil, cs.KeyLen)
+	iv = mint.HkdfExpandLabel(cs.Hash, secret, "iv", nil, cs.IvLen)
 	return key, iv, nil
 }

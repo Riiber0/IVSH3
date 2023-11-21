@@ -2,8 +2,6 @@ package quic
 
 import (
 	"bytes"
-	"net"
-	"time"
 
 	"github.com/lucas-clemente/quic-go/internal/crypto"
 	"github.com/lucas-clemente/quic-go/internal/protocol"
@@ -19,14 +17,12 @@ type mockAEAD struct {
 }
 
 func (m *mockAEAD) Open(dst, src []byte, packetNumber protocol.PacketNumber, associatedData []byte) ([]byte, protocol.EncryptionLevel, error) {
-	nullAEAD, err := crypto.NewNullAEAD(protocol.PerspectiveClient, 0x1337, protocol.VersionWhatever)
-	Expect(err).ToNot(HaveOccurred())
+	nullAEAD := crypto.NewNullAEAD(protocol.PerspectiveClient, protocol.VersionWhatever)
 	res, err := nullAEAD.Open(dst, src, packetNumber, associatedData)
 	return res, m.encLevelOpen, err
 }
 func (m *mockAEAD) Seal(dst, src []byte, packetNumber protocol.PacketNumber, associatedData []byte) ([]byte, protocol.EncryptionLevel) {
-	nullAEAD, err := crypto.NewNullAEAD(protocol.PerspectiveServer, 0x1337, protocol.VersionWhatever)
-	Expect(err).ToNot(HaveOccurred())
+	nullAEAD := crypto.NewNullAEAD(protocol.PerspectiveServer, protocol.VersionWhatever)
 	return nullAEAD.Seal(dst, src, packetNumber, associatedData), protocol.EncryptionUnspecified
 }
 
@@ -35,21 +31,19 @@ var _ quicAEAD = &mockAEAD{}
 var _ = Describe("Packet unpacker", func() {
 	var (
 		unpacker *packetUnpacker
-		hdr      *wire.Header
+		hdr      *wire.PublicHeader
 		hdrBin   []byte
 		data     []byte
 		buf      *bytes.Buffer
-		sess     *session
 	)
 
 	BeforeEach(func() {
-		sess = &session{version: protocol.VersionWhatever, perspective: protocol.PerspectiveClient, recoveredPackets: make(chan *receivedPacket, 10)}
-		hdr = &wire.Header{
+		hdr = &wire.PublicHeader{
 			PacketNumber:    10,
 			PacketNumberLen: 1,
 		}
 		hdrBin = []byte{0x04, 0x4c, 0x01}
-		unpacker = &packetUnpacker{aead: &mockAEAD{}, sess: sess}
+		unpacker = &packetUnpacker{aead: &mockAEAD{}}
 		data = nil
 		buf = &bytes.Buffer{}
 	})
@@ -63,7 +57,7 @@ var _ = Describe("Packet unpacker", func() {
 		err := f.Write(buf, 0)
 		Expect(err).ToNot(HaveOccurred())
 		setData(buf.Bytes())
-		packet, err := unpacker.Unpack(hdrBin, hdr, data, false)
+		packet, err := unpacker.Unpack(hdrBin, hdr, data)
 		Expect(err).ToNot(HaveOccurred())
 		Expect(packet.frames).To(Equal([]wire.Frame{f}))
 	})
@@ -74,7 +68,7 @@ var _ = Describe("Packet unpacker", func() {
 		Expect(err).ToNot(HaveOccurred())
 		setData(buf.Bytes())
 		unpacker.aead.(*mockAEAD).encLevelOpen = protocol.EncryptionSecure
-		packet, err := unpacker.Unpack(hdrBin, hdr, data, false)
+		packet, err := unpacker.Unpack(hdrBin, hdr, data)
 		Expect(err).ToNot(HaveOccurred())
 		Expect(packet.encryptionLevel).To(Equal(protocol.EncryptionSecure))
 	})
@@ -88,7 +82,7 @@ var _ = Describe("Packet unpacker", func() {
 		err := f.Write(buf, protocol.VersionWhatever)
 		Expect(err).ToNot(HaveOccurred())
 		setData(buf.Bytes())
-		packet, err := unpacker.Unpack(hdrBin, hdr, data, false)
+		packet, err := unpacker.Unpack(hdrBin, hdr, data)
 		Expect(err).ToNot(HaveOccurred())
 		Expect(packet.frames).To(HaveLen(1))
 		readFrame := packet.frames[0].(*wire.AckFrame)
@@ -96,9 +90,15 @@ var _ = Describe("Packet unpacker", func() {
 		Expect(readFrame.LargestAcked).To(Equal(protocol.PacketNumber(0x13)))
 	})
 
+	It("errors on CONGESTION_FEEDBACK frames", func() {
+		setData([]byte{0x20})
+		_, err := unpacker.Unpack(hdrBin, hdr, data)
+		Expect(err).To(MatchError("unimplemented: CONGESTION_FEEDBACK"))
+	})
+
 	It("handles PADDING frames", func() {
 		setData([]byte{0, 0, 0}) // 3 bytes PADDING
-		packet, err := unpacker.Unpack(hdrBin, hdr, data, false)
+		packet, err := unpacker.Unpack(hdrBin, hdr, data)
 		Expect(err).ToNot(HaveOccurred())
 		Expect(packet.frames).To(BeEmpty())
 	})
@@ -112,265 +112,96 @@ var _ = Describe("Packet unpacker", func() {
 		err = f.Write(buf, protocol.VersionWhatever)
 		Expect(err).ToNot(HaveOccurred())
 		setData(buf.Bytes())
-		packet, err := unpacker.Unpack(hdrBin, hdr, data, false)
+		packet, err := unpacker.Unpack(hdrBin, hdr, data)
 		Expect(err).ToNot(HaveOccurred())
 		Expect(packet.frames).To(HaveLen(2))
 	})
 
 	It("unpacks RST_STREAM frames", func() {
-		f := &wire.RstStreamFrame{
-			StreamID:   0xdeadbeef,
-			ByteOffset: 0xdecafbad11223344,
-			ErrorCode:  0x13371234,
-		}
-		err := f.Write(buf, protocol.VersionWhatever)
+		setData([]byte{0x01, 0xEF, 0xBE, 0xAD, 0xDE, 0x44, 0x33, 0x22, 0x11, 0xAD, 0xFB, 0xCA, 0xDE, 0x34, 0x12, 0x37, 0x13})
+		packet, err := unpacker.Unpack(hdrBin, hdr, data)
 		Expect(err).ToNot(HaveOccurred())
-		setData(buf.Bytes())
-		packet, err := unpacker.Unpack(hdrBin, hdr, data, false)
-		Expect(err).ToNot(HaveOccurred())
-		Expect(packet.frames).To(Equal([]wire.Frame{f}))
+		Expect(packet.frames).To(Equal([]wire.Frame{
+			&wire.RstStreamFrame{
+				StreamID:   0xDEADBEEF,
+				ByteOffset: 0xDECAFBAD11223344,
+				ErrorCode:  0x13371234,
+			},
+		}))
 	})
 
 	It("unpacks CONNECTION_CLOSE frames", func() {
 		f := &wire.ConnectionCloseFrame{ReasonPhrase: "foo"}
-		err := f.Write(buf, protocol.VersionWhatever)
-		Expect(err).ToNot(HaveOccurred())
-		setData(buf.Bytes())
-		packet, err := unpacker.Unpack(hdrBin, hdr, data, false)
-		Expect(err).ToNot(HaveOccurred())
-		Expect(packet.frames).To(Equal([]wire.Frame{f}))
-	})
-
-	It("unpacks GOAWAY frames", func() {
-		f := &wire.GoawayFrame{
-			ErrorCode:      1,
-			LastGoodStream: 2,
-			ReasonPhrase:   "foo",
-		}
 		err := f.Write(buf, 0)
 		Expect(err).ToNot(HaveOccurred())
 		setData(buf.Bytes())
-		packet, err := unpacker.Unpack(hdrBin, hdr, data, false)
+		packet, err := unpacker.Unpack(hdrBin, hdr, data)
 		Expect(err).ToNot(HaveOccurred())
 		Expect(packet.frames).To(Equal([]wire.Frame{f}))
 	})
 
-	Context("flow control frames, when the crypto stream is stream 0", func() {
-		BeforeEach(func() {
-			unpacker.version = versionCryptoStream0
+	It("accepts GOAWAY frames", func() {
+		setData([]byte{
+			0x03,
+			0x01, 0x00, 0x00, 0x00,
+			0x02, 0x00, 0x00, 0x00,
+			0x03, 0x00,
+			'f', 'o', 'o',
 		})
-
-		It("unpacks MAX_DATA frames", func() {
-			f := &wire.MaxDataFrame{
-				ByteOffset: 0xcafe000000001337,
-			}
-			buf := &bytes.Buffer{}
-			err := f.Write(buf, versionCryptoStream0)
-			Expect(err).ToNot(HaveOccurred())
-			setData(buf.Bytes())
-			packet, err := unpacker.Unpack(hdrBin, hdr, data, false)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(packet.frames).To(Equal([]wire.Frame{f}))
-		})
-
-		It("unpacks MAX_STREAM_DATA frames", func() {
-			f := &wire.MaxStreamDataFrame{
-				StreamID:   0xdeadbeef,
-				ByteOffset: 0xcafe000000001337,
-			}
-			buf := &bytes.Buffer{}
-			err := f.Write(buf, versionCryptoStream0)
-			Expect(err).ToNot(HaveOccurred())
-			setData(buf.Bytes())
-			packet, err := unpacker.Unpack(hdrBin, hdr, data, false)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(packet.frames).To(Equal([]wire.Frame{f}))
-		})
-
-		It("unpacks connection-level BLOCKED frames", func() {
-			f := &wire.BlockedFrame{}
-			buf := &bytes.Buffer{}
-			err := f.Write(buf, versionCryptoStream0)
-			Expect(err).ToNot(HaveOccurred())
-			setData(buf.Bytes())
-			packet, err := unpacker.Unpack(hdrBin, hdr, data, false)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(packet.frames).To(Equal([]wire.Frame{f}))
-		})
-
-		It("unpacks stream-level BLOCKED frames", func() {
-			f := &wire.StreamBlockedFrame{StreamID: 0xdeadbeef}
-			buf := &bytes.Buffer{}
-			err := f.Write(buf, versionCryptoStream0)
-			Expect(err).ToNot(HaveOccurred())
-			setData(buf.Bytes())
-			packet, err := unpacker.Unpack(hdrBin, hdr, data, false)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(packet.frames).To(Equal([]wire.Frame{f}))
-		})
-
-		It("errors on invalid frames", func() {
-			for b, e := range map[byte]qerr.ErrorCode{
-				0x04: qerr.InvalidWindowUpdateData,
-				0x05: qerr.InvalidWindowUpdateData,
-				0x09: qerr.InvalidBlockedData,
-			} {
-				setData([]byte{b})
-				_, err := unpacker.Unpack(hdrBin, hdr, data, false)
-				Expect(err.(*qerr.QuicError).ErrorCode).To(Equal(e))
-			}
-		})
+		packet, err := unpacker.Unpack(hdrBin, hdr, data)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(packet.frames).To(Equal([]wire.Frame{
+			&wire.GoawayFrame{
+				ErrorCode:      1,
+				LastGoodStream: 2,
+				ReasonPhrase:   "foo",
+			},
+		}))
 	})
 
-	Context("flow control frames, when the crypto stream is stream 1", func() {
-		BeforeEach(func() {
-			unpacker.version = versionCryptoStream1
-		})
+	It("accepts WINDOW_UPDATE frames", func() {
+		setData([]byte{0x04, 0xEF, 0xBE, 0xAD, 0xDE, 0x37, 0x13, 0, 0, 0, 0, 0xFE, 0xCA})
+		packet, err := unpacker.Unpack(hdrBin, hdr, data)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(packet.frames).To(Equal([]wire.Frame{
+			&wire.WindowUpdateFrame{
+				StreamID:   0xDEADBEEF,
+				ByteOffset: 0xCAFE000000001337,
+			},
+		}))
+	})
 
-		It("unpacks a stream-level WINDOW_UPDATE frame", func() {
-			f := &wire.MaxStreamDataFrame{
-				StreamID:   0xdeadbeef,
-				ByteOffset: 0xcafe000000001337,
-			}
-			buf := &bytes.Buffer{}
-			err := f.Write(buf, versionCryptoStream1)
-			Expect(err).ToNot(HaveOccurred())
-			setData(buf.Bytes())
-			packet, err := unpacker.Unpack(hdrBin, hdr, data, false)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(packet.frames).To(Equal([]wire.Frame{f}))
-		})
-
-		It("unpacks a connection-level WINDOW_UPDATE frame", func() {
-			f := &wire.MaxDataFrame{
-				ByteOffset: 0xcafe000000001337,
-			}
-			buf := &bytes.Buffer{}
-			err := f.Write(buf, versionCryptoStream1)
-			Expect(err).ToNot(HaveOccurred())
-			setData(buf.Bytes())
-			packet, err := unpacker.Unpack(hdrBin, hdr, data, false)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(packet.frames).To(Equal([]wire.Frame{f}))
-		})
-
-		It("unpacks connection-level BLOCKED frames", func() {
-			f := &wire.BlockedFrame{}
-			buf := &bytes.Buffer{}
-			err := f.Write(buf, versionCryptoStream1)
-			Expect(err).ToNot(HaveOccurred())
-			setData(buf.Bytes())
-			packet, err := unpacker.Unpack(hdrBin, hdr, data, false)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(packet.frames).To(Equal([]wire.Frame{f}))
-		})
-
-		It("unpacks stream-level BLOCKED frames", func() {
-			f := &wire.StreamBlockedFrame{StreamID: 0xdeadbeef}
-			buf := &bytes.Buffer{}
-			err := f.Write(buf, versionCryptoStream1)
-			Expect(err).ToNot(HaveOccurred())
-			setData(buf.Bytes())
-			packet, err := unpacker.Unpack(hdrBin, hdr, data, false)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(packet.frames).To(Equal([]wire.Frame{f}))
-		})
-
-		It("errors on invalid frames", func() {
-			for b, e := range map[byte]qerr.ErrorCode{
-				0x04: qerr.InvalidWindowUpdateData,
-				0x05: qerr.InvalidBlockedData,
-			} {
-				setData([]byte{b})
-				_, err := unpacker.Unpack(hdrBin, hdr, data, false)
-				Expect(err.(*qerr.QuicError).ErrorCode).To(Equal(e))
-			}
-		})
+	It("accepts BLOCKED frames", func() {
+		setData([]byte{0x05, 0xEF, 0xBE, 0xAD, 0xDE})
+		packet, err := unpacker.Unpack(hdrBin, hdr, data)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(packet.frames).To(Equal([]wire.Frame{
+			&wire.BlockedFrame{StreamID: 0xDEADBEEF},
+		}))
 	})
 
 	It("unpacks STOP_WAITING frames", func() {
 		setData([]byte{0x06, 0x03})
-		packet, err := unpacker.Unpack(hdrBin, hdr, data, false)
+		packet, err := unpacker.Unpack(hdrBin, hdr, data)
 		Expect(err).ToNot(HaveOccurred())
 		Expect(packet.frames).To(Equal([]wire.Frame{
 			&wire.StopWaitingFrame{LeastUnacked: 7},
 		}))
 	})
 
-	It("unpacks PING frames", func() {
+	It("accepts PING frames", func() {
 		setData([]byte{0x07})
-		packet, err := unpacker.Unpack(hdrBin, hdr, data, false)
+		packet, err := unpacker.Unpack(hdrBin, hdr, data)
 		Expect(err).ToNot(HaveOccurred())
 		Expect(packet.frames).To(Equal([]wire.Frame{
 			&wire.PingFrame{},
 		}))
 	})
 
-	It("unpacks ADD_ADDRESS frames", func() {
-		f := &wire.AddAddressFrame{
-			AddrID: 5,
-			Addr:   net.UDPAddr{IP: net.IPv4(78, 85, 27, 6), Port: 1337},
-		}
-		buf := &bytes.Buffer{}
-		err := f.Write(buf, versionCryptoStream1)
-		Expect(err).ToNot(HaveOccurred())
-		setData(buf.Bytes())
-		packet, err := unpacker.Unpack(hdrBin, hdr, data, false)
-		Expect(err).ToNot(HaveOccurred())
-		Expect(packet.frames).To(Equal([]wire.Frame{
-			&wire.AddAddressFrame{
-				AddrID: 5,
-				Addr:   net.UDPAddr{IP: net.IPv4(78, 85, 27, 6), Port: 1337},
-			},
-		}))
-	})
-
-	It("unpacks REMOVE_ADDRESS frames", func() {
-		f := &wire.RemoveAddressFrame{
-			AddrID: 5,
-		}
-		buf := &bytes.Buffer{}
-		err := f.Write(buf, versionCryptoStream1)
-		Expect(err).ToNot(HaveOccurred())
-		setData(buf.Bytes())
-		packet, err := unpacker.Unpack(hdrBin, hdr, data, false)
-		Expect(err).ToNot(HaveOccurred())
-		Expect(packet.frames).To(Equal([]wire.Frame{
-			&wire.RemoveAddressFrame{
-				AddrID: 5,
-			},
-		}))
-	})
-
-	It("unpacks PATHS frames", func() {
-		pinfos := make(map[protocol.PathID]wire.PathInfoSection)
-		pinfos[0] = wire.PathInfoSection{
-			AddrID: protocol.AddressID(0),
-			RTT:    7 * time.Millisecond,
-		}
-		pinfos[1] = wire.PathInfoSection{
-			AddrID: protocol.AddressID(0),
-			RTT:    14 * time.Millisecond, // Don"t have a too high value...
-		}
-		f := &wire.PathsFrame{
-			ActivePaths: protocol.PathID(1),
-			PathInfos:   pinfos,
-		}
-		buf := &bytes.Buffer{}
-		err := f.Write(buf, versionCryptoStream1)
-		Expect(err).ToNot(HaveOccurred())
-		setData(buf.Bytes())
-		packet, err := unpacker.Unpack(hdrBin, hdr, data, false)
-		Expect(err).ToNot(HaveOccurred())
-		Expect(packet.frames).To(Equal([]wire.Frame{
-			f,
-		}))
-	})
-
 	It("errors on invalid type", func() {
-		setData([]byte{0xf})
-		_, err := unpacker.Unpack(hdrBin, hdr, data, false)
-		Expect(err).To(MatchError("InvalidFrameData: unknown type byte 0xf"))
+		setData([]byte{0x08})
+		_, err := unpacker.Unpack(hdrBin, hdr, data)
+		Expect(err).To(MatchError("InvalidFrameData: unknown type byte 0x8"))
 	})
 
 	It("errors on invalid frames", func() {
@@ -380,39 +211,41 @@ var _ = Describe("Packet unpacker", func() {
 			0x01: qerr.InvalidRstStreamData,
 			0x02: qerr.InvalidConnectionCloseData,
 			0x03: qerr.InvalidGoawayData,
+			0x04: qerr.InvalidWindowUpdateData,
+			0x05: qerr.InvalidBlockedData,
 			0x06: qerr.InvalidStopWaitingData,
 		} {
 			setData([]byte{b})
-			_, err := unpacker.Unpack(hdrBin, hdr, data, false)
+			_, err := unpacker.Unpack(hdrBin, hdr, data)
 			Expect(err.(*qerr.QuicError).ErrorCode).To(Equal(e))
 		}
 	})
 
 	Context("unpacking STREAM frames", func() {
-		It("unpacks unencrypted STREAM frames on the crypto stream", func() {
+		It("unpacks unencrypted STREAM frames on stream 1", func() {
 			unpacker.aead.(*mockAEAD).encLevelOpen = protocol.EncryptionUnencrypted
 			f := &wire.StreamFrame{
-				StreamID: unpacker.version.CryptoStreamID(),
+				StreamID: 1,
 				Data:     []byte("foobar"),
 			}
 			err := f.Write(buf, 0)
 			Expect(err).ToNot(HaveOccurred())
 			setData(buf.Bytes())
-			packet, err := unpacker.Unpack(hdrBin, hdr, data, false)
+			packet, err := unpacker.Unpack(hdrBin, hdr, data)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(packet.frames).To(Equal([]wire.Frame{f}))
 		})
 
-		It("unpacks encrypted STREAM frames on the crypto stream", func() {
+		It("unpacks encrypted STREAM frames on stream 1", func() {
 			unpacker.aead.(*mockAEAD).encLevelOpen = protocol.EncryptionSecure
 			f := &wire.StreamFrame{
-				StreamID: unpacker.version.CryptoStreamID(),
+				StreamID: 1,
 				Data:     []byte("foobar"),
 			}
 			err := f.Write(buf, 0)
 			Expect(err).ToNot(HaveOccurred())
 			setData(buf.Bytes())
-			packet, err := unpacker.Unpack(hdrBin, hdr, data, false)
+			packet, err := unpacker.Unpack(hdrBin, hdr, data)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(packet.frames).To(Equal([]wire.Frame{f}))
 		})
@@ -426,7 +259,7 @@ var _ = Describe("Packet unpacker", func() {
 			err := f.Write(buf, 0)
 			Expect(err).ToNot(HaveOccurred())
 			setData(buf.Bytes())
-			_, err = unpacker.Unpack(hdrBin, hdr, data, false)
+			_, err = unpacker.Unpack(hdrBin, hdr, data)
 			Expect(err).To(MatchError(qerr.Error(qerr.UnencryptedStreamData, "received unencrypted stream data on stream 3")))
 		})
 	})

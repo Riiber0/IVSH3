@@ -22,8 +22,7 @@ const cubeScale = 40
 const cubeCongestionWindowScale = 410
 const cubeFactor protocol.PacketNumber = 1 << cubeScale / cubeCongestionWindowScale
 
-//const defaultNumConnections = 2
-const defaultNumConnections = 1 // VUVA: change to 1 to reduce effective RenoBeta
+const defaultNumConnections = 2
 
 // Default Cubic backoff factor
 const beta float32 = 0.7
@@ -196,11 +195,7 @@ func (c *Cubic) CongestionWindowAfterAck(currentCongestionWindow protocol.Packet
 	if elapsedTime > int64(c.timeToOriginPoint) {
 		targetCongestionWindow = c.originPointCongestionWindow + deltaCongestionWindow
 	} else {
-		if deltaCongestionWindow > c.originPointCongestionWindow {
-			targetCongestionWindow = 0
-		} else {
-			targetCongestionWindow = c.originPointCongestionWindow - deltaCongestionWindow
-		}
+		targetCongestionWindow = c.originPointCongestionWindow - deltaCongestionWindow
 	}
 	// With dynamic beta/alpha based on number of active streams, it is possible
 	// for the required_ack_count to become much lower than acked_packets_count_

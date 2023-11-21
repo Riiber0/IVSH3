@@ -15,8 +15,8 @@ var _ = Describe("NullAEAD using FNV128a", func() {
 	var aeadClient AEAD
 
 	BeforeEach(func() {
-		aeadServer = &nullAEADFNV128a{protocol.PerspectiveServer}
-		aeadClient = &nullAEADFNV128a{protocol.PerspectiveClient}
+		aeadServer = NewNullAEAD(protocol.PerspectiveServer, protocol.Version37)
+		aeadClient = NewNullAEAD(protocol.PerspectiveClient, protocol.Version37)
 	})
 
 	It("seals and opens, client => server", func() {

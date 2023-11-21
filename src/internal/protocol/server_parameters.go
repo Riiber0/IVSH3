@@ -2,11 +2,8 @@ package protocol
 
 import "time"
 
-// MaxPacketSize is the maximum packet size that we use for sending packets.
-// It includes the QUIC packet header, but excludes the UDP and IP header.
-//const MaxPacketSize ByteCount = 1200
-// VUVA: don't know why it's 1200 by default. Maybe FEC things?? 
-// Change it to 1350
+// MaxPacketSize is the maximum packet size, including the public header, that we use for sending packets
+// This is the value used by Chromium for a QUIC packet sent using IPv6 (for IPv4 it would be 1370)
 const MaxPacketSize ByteCount = 1350
 
 // NonForwardSecurePacketSizeReduction is the number of bytes a non forward-secure packet has to be smaller than a forward-secure packet
@@ -19,9 +16,7 @@ const NonForwardSecurePacketSizeReduction = 50
 const DefaultMaxCongestionWindow = 2500
 
 // InitialCongestionWindow is the initial congestion window in QUIC packets
-//const InitialCongestionWindow = 32
-// VUVA: Reduce initial congestion window
-const InitialCongestionWindow = 8
+const InitialCongestionWindow = 32
 
 // MaxUndecryptablePackets limits the number of undecryptable packets that a
 // session queues for later until it sends a public reset.
@@ -33,17 +28,15 @@ const PublicResetTimeout = 500 * time.Millisecond
 
 // AckSendDelay is the maximum delay that can be applied to an ACK for a retransmittable packet
 // This is the value Chromium is using
-//const AckSendDelay = 25 * time.Millisecond
-// VUVA: disable ACK_DELAY
-const AckSendDelay = 0 * time.Millisecond
+const AckSendDelay = 25 * time.Millisecond
 
 // ReceiveStreamFlowControlWindow is the stream-level flow control window for receiving data
 // This is the value that Google servers are using
-const ReceiveStreamFlowControlWindow = (1 << 10) * 512 // 512 kB
+const ReceiveStreamFlowControlWindow = (1 << 10) * 32 // 32 kB
 
 // ReceiveConnectionFlowControlWindow is the connection-level flow control window for receiving data
 // This is the value that Google servers are using
-const ReceiveConnectionFlowControlWindow = (1 << 10) * 768 // 768 kB
+const ReceiveConnectionFlowControlWindow = (1 << 10) * 48 // 48 kB
 
 // DefaultMaxReceiveStreamFlowControlWindowServer is the default maximum stream-level flow control window for receiving data, for the server
 // This is the value that Google servers are using
@@ -55,22 +48,21 @@ const DefaultMaxReceiveConnectionFlowControlWindowServer = 1.5 * (1 << 20) // 1.
 
 // DefaultMaxReceiveStreamFlowControlWindowClient is the default maximum stream-level flow control window for receiving data, for the client
 // This is the value that Chromium is using
-//const DefaultMaxReceiveStreamFlowControlWindowClient = 16 * (1 << 20) // 16 MB
-// VUVA: assume no limit in send windows
-const DefaultMaxReceiveStreamFlowControlWindowClient =  (1 << 28) // 256 MB
+const DefaultMaxReceiveStreamFlowControlWindowClient = 16 * (1 << 20) // 16 MB
 
 // DefaultMaxReceiveConnectionFlowControlWindowClient is the default connection-level flow control window for receiving data, for the client
 // This is the value that Google servers are using
-//const DefaultMaxReceiveConnectionFlowControlWindowClient = 24 * (1 << 20) // 24 MB
-// VUVA: assume no limit in send windows
-const DefaultMaxReceiveConnectionFlowControlWindowClient = (1 << 29) // 512 MB
+const DefaultMaxReceiveConnectionFlowControlWindowClient = 24 * (1 << 20) // 24 MB
 
 // ConnectionFlowControlMultiplier determines how much larger the connection flow control windows needs to be relative to any stream's flow control window
 // This is the value that Chromium is using
 const ConnectionFlowControlMultiplier = 1.5
 
-// MaxIncomingStreams is the maximum number of streams that a peer may open
-const MaxIncomingStreams = 4096
+// MaxStreamsPerConnection is the maximum value accepted for the number of streams per connection
+const MaxStreamsPerConnection = 100
+
+// MaxIncomingDynamicStreamsPerConnection is the maximum value accepted for the incoming number of dynamic streams per connection
+const MaxIncomingDynamicStreamsPerConnection = 100
 
 // MaxStreamsMultiplier is the slack the client is allowed for the maximum number of streams per connection, needed e.g. when packets are out of order or dropped. The minimum of this procentual increase and the absolute increment specified by MaxStreamsMinimumIncrement is used.
 const MaxStreamsMultiplier = 1.1
@@ -80,7 +72,7 @@ const MaxStreamsMinimumIncrement = 10
 
 // MaxNewStreamIDDelta is the maximum difference between and a newly opened Stream and the highest StreamID that a client has ever opened
 // note that the number of streams is half this value, since the client can only open streams with open StreamID
-const MaxNewStreamIDDelta = 4 * MaxIncomingStreams
+const MaxNewStreamIDDelta = 4 * MaxStreamsPerConnection
 
 // MaxSessionUnprocessedPackets is the max number of packets stored in each session that are not yet processed.
 const MaxSessionUnprocessedPackets = DefaultMaxCongestionWindow
@@ -124,11 +116,8 @@ const CryptoParameterMaxLength = 4000
 // EphermalKeyLifetime is the lifetime of the ephermal key during the handshake, see handshake.getEphermalKEX.
 const EphermalKeyLifetime = time.Minute
 
-// MinRemoteIdleTimeout is the minimum value that we accept for the remote idle timeout
-const MinRemoteIdleTimeout = 5 * time.Second
-
 // DefaultIdleTimeout is the default idle timeout
-const DefaultIdleTimeout = 45 * time.Second //500 * time.Second
+const DefaultIdleTimeout = 30 * time.Second
 
 // DefaultHandshakeTimeout is the default timeout for a connection until the crypto handshake succeeds.
 const DefaultHandshakeTimeout = 10 * time.Second

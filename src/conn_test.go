@@ -2,6 +2,7 @@ package quic
 
 import (
 	"bytes"
+	"io"
 	"net"
 	"time"
 
@@ -24,8 +25,8 @@ func (c *mockPacketConn) ReadFrom(b []byte) (int, net.Addr, error) {
 		return 0, nil, c.readErr
 	}
 	if c.dataToRead == nil { // block if there's no data
-		time.Sleep(10 * time.Millisecond)
-		return c.ReadFrom(b)
+		time.Sleep(time.Hour)
+		return 0, nil, io.EOF
 	}
 	n := copy(b, c.dataToRead)
 	c.dataToRead = nil

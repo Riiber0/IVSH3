@@ -156,9 +156,9 @@ var _ = Describe("Cert Manager", func() {
 			return key, generateCertificate(template, template, &key.PublicKey, key)
 		}
 
-		PIt("accepts a valid certificate", func() {
+		It("accepts a valid certificate", func() {
 			cc := NewCertChain(testdata.GetTLSConfig()).(*certChain)
-			tlsCert, err := cc.getCertForSNI("localhost")
+			tlsCert, err := cc.getCertForSNI("quic.clemente.io")
 			Expect(err).ToNot(HaveOccurred())
 			for _, data := range tlsCert.Certificate {
 				var cert *x509.Certificate
@@ -166,7 +166,7 @@ var _ = Describe("Cert Manager", func() {
 				Expect(err).ToNot(HaveOccurred())
 				cm.chain = append(cm.chain, cert)
 			}
-			err = cm.Verify("localhost")
+			err = cm.Verify("quic.clemente.io")
 			Expect(err).ToNot(HaveOccurred())
 		})
 
@@ -244,7 +244,7 @@ var _ = Describe("Cert Manager", func() {
 			xcert, err := x509.ParseCertificate(cert.Certificate[0])
 			Expect(err).ToNot(HaveOccurred())
 			cm.chain = []*x509.Certificate{xcert}
-			err = cm.Verify("localhost")
+			err = cm.Verify("quic.clemente.io")
 			_, ok := err.(x509.UnknownAuthorityError)
 			Expect(ok).To(BeTrue())
 		})
@@ -264,7 +264,7 @@ var _ = Describe("Cert Manager", func() {
 				InsecureSkipVerify: true,
 			}
 			cm.chain = []*x509.Certificate{leafCert}
-			err := cm.Verify("localhost")
+			err := cm.Verify("quic.clemente.io")
 			Expect(err).ToNot(HaveOccurred())
 		})
 
@@ -317,10 +317,10 @@ var _ = Describe("Cert Manager", func() {
 			}
 
 			templateRoot := &x509.Certificate{
-				SerialNumber:          big.NewInt(1),
-				NotBefore:             time.Now().Add(-time.Hour),
-				NotAfter:              time.Now().Add(time.Hour),
-				IsCA:                  true,
+				SerialNumber: big.NewInt(1),
+				NotBefore:    time.Now().Add(-time.Hour),
+				NotAfter:     time.Now().Add(time.Hour),
+				IsCA:         true,
 				BasicConstraintsValid: true,
 			}
 			rootKey, rootCert := getCertificate(templateRoot)

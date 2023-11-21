@@ -22,8 +22,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/caddyserver/caddy"
-	"github.com/caddyserver/caddy/caddyhttp/httpserver"
+	"github.com/mholt/caddy"
+	"github.com/mholt/caddy/caddyhttp/httpserver"
 )
 
 func init() {
@@ -67,7 +67,7 @@ outer:
 		}
 
 		// In order to avoid unused memory allocation, gzip.putWriter only be called when gzip compression happened.
-		// see https://github.com/caddyserver/caddy/issues/2395
+		// see https://github.com/mholt/caddy/issues/2395
 		gz := &gzipResponseWriter{
 			ResponseWriterWrapper: &httpserver.ResponseWriterWrapper{ResponseWriter: w},
 			newWriter: func() io.Writer {
@@ -130,19 +130,7 @@ type gzipResponseWriter struct {
 func (w *gzipResponseWriter) WriteHeader(code int) {
 	w.Header().Del("Content-Length")
 	w.Header().Set("Content-Encoding", "gzip")
-	varyList, exist := w.Header()["Vary"]
-	shouldAddVary := true
-	if exist {
-		for _, vary := range varyList {
-			if vary == "Accept-Encoding" {
-				shouldAddVary = false
-				break
-			}
-		}
-	}
-	if shouldAddVary {
-		w.Header().Add("Vary", "Accept-Encoding")
-	}
+	w.Header().Add("Vary", "Accept-Encoding")
 	originalEtag := w.Header().Get("ETag")
 	if originalEtag != "" && !strings.HasPrefix(originalEtag, "W/") {
 		w.Header().Set("ETag", "W/"+originalEtag)

@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/lucas-clemente/quic-go/internal/crypto"
-	"github.com/lucas-clemente/quic-go/internal/mocks/crypto"
 	"github.com/lucas-clemente/quic-go/internal/protocol"
 	"github.com/lucas-clemente/quic-go/internal/utils"
 	"github.com/lucas-clemente/quic-go/qerr"
@@ -80,7 +79,6 @@ var _ = Describe("Client Crypto Setup", func() {
 		keyDerivationCalledWith *keyDerivationValues
 		shloMap                 map[Tag][]byte
 		aeadChanged             chan protocol.EncryptionLevel
-		paramsChan              chan TransportParameters
 	)
 
 	BeforeEach(func() {
@@ -100,25 +98,31 @@ var _ = Describe("Client Crypto Setup", func() {
 				divNonce:      divNonce,
 				pers:          pers,
 			}
-			return mockcrypto.NewMockAEAD(mockCtrl), nil
+			encLevel := protocol.EncryptionSecure
+			if forwardSecure {
+				encLevel = protocol.EncryptionForwardSecure
+			}
+			return &mockAEAD{encLevel: encLevel, sharedSecret: sharedSecret}, nil
 		}
 
 		stream = newMockStream()
 		certManager = &mockCertManager{}
-		version := protocol.Version39
-		// use a buffered channel here, so that we can parse a SHLO without having to receive the TransportParameters to avoid blocking
-		paramsChan = make(chan TransportParameters, 1)
+		version := protocol.Version37
 		aeadChanged = make(chan protocol.EncryptionLevel, 2)
 		csInt, err := NewCryptoSetupClient(
-			stream,
 			"hostname",
 			0,
 			version,
+			stream,
 			nil,
-			&TransportParameters{IdleTimeout: protocol.DefaultIdleTimeout},
-			paramsChan,
+			NewConnectionParamatersManager(
+				protocol.PerspectiveClient,
+				version,
+				protocol.DefaultMaxReceiveStreamFlowControlWindowClient, protocol.DefaultMaxReceiveConnectionFlowControlWindowClient,
+				protocol.DefaultIdleTimeout,
+			),
 			aeadChanged,
-			protocol.Version39,
+			&TransportParameters{},
 			nil,
 		)
 		Expect(err).ToNot(HaveOccurred())
@@ -126,8 +130,7 @@ var _ = Describe("Client Crypto Setup", func() {
 		cs.certManager = certManager
 		cs.keyDerivation = keyDerivation
 		cs.keyExchange = func() crypto.KeyExchange { return &mockKEX{ephermal: true} }
-		cs.nullAEAD = mockcrypto.NewMockAEAD(mockCtrl)
-		cs.cryptoStream = stream
+		cs.nullAEAD = &mockAEAD{encLevel: protocol.EncryptionUnencrypted}
 	})
 
 	AfterEach(func() {
@@ -195,27 +198,37 @@ var _ = Describe("Client Crypto Setup", func() {
 				Expect(cs.validateVersionList([]byte{0})).To(BeTrue())
 			})
 
-			It("detects a downgrade attack if the number of versions is not equal", func() {
+			It("detects a downgrade attack if the number of versions is unequal", func() {
 				cs.negotiatedVersions = []protocol.VersionNumber{protocol.VersionWhatever}
-				Expect(cs.validateVersionList(bytes.Repeat([]byte{'f'}, 2*4))).To(BeFalse())
+				Expect(cs.validateVersionList(bytes.Repeat([]byte{'f'}, 8))).To(BeFalse())
 			})
 
 			It("detects a downgrade attack", func() {
 				cs.negotiatedVersions = []protocol.VersionNumber{12}
 				b := &bytes.Buffer{}
-				utils.BigEndian.WriteUint32(b, 11)
+				utils.LittleEndian.WriteUint32(b, protocol.VersionNumberToTag(11))
 				Expect(cs.validateVersionList(b.Bytes())).To(BeFalse())
 			})
 
 			It("errors if the version tags are invalid", func() {
 				cs.negotiatedVersions = []protocol.VersionNumber{protocol.VersionWhatever}
-				Expect(cs.validateVersionList([]byte{0, 1, 2})).To(BeFalse()) // 1 byte too short
+				Expect(cs.validateVersionList([]byte{0, 1, 2})).To(BeFalse())
+			})
+
+			It("doesn't care about unsupported versions", func() {
+				ver := protocol.SupportedVersions[0]
+				cs.negotiatedVersions = []protocol.VersionNumber{protocol.VersionUnsupported, ver, protocol.VersionUnsupported}
+				b := &bytes.Buffer{}
+				b.Write([]byte{0, 0, 0, 0})
+				utils.LittleEndian.WriteUint32(b, protocol.VersionNumberToTag(ver))
+				b.Write([]byte{0x13, 0x37, 0x13, 0x37})
+				Expect(cs.validateVersionList(b.Bytes())).To(BeTrue())
 			})
 
 			It("returns the right error when detecting a downgrade attack", func() {
 				cs.negotiatedVersions = []protocol.VersionNumber{protocol.VersionWhatever}
 				cs.receivedSecurePacket = true
-				_, err := cs.handleSHLOMessage(map[Tag][]byte{
+				err := cs.handleSHLOMessage(map[Tag][]byte{
 					TagPUBS: []byte{0},
 					TagVER:  []byte{0, 1},
 				})
@@ -378,7 +391,7 @@ var _ = Describe("Client Crypto Setup", func() {
 
 		It("rejects unencrypted SHLOs", func() {
 			cs.receivedSecurePacket = false
-			_, err := cs.handleSHLOMessage(shloMap)
+			err := cs.handleSHLOMessage(shloMap)
 			Expect(err).To(MatchError(qerr.Error(qerr.CryptoEncryptionLevelIncorrect, "unencrypted SHLO message")))
 			Expect(aeadChanged).ToNot(Receive())
 			Expect(aeadChanged).ToNot(BeClosed())
@@ -386,14 +399,14 @@ var _ = Describe("Client Crypto Setup", func() {
 
 		It("rejects SHLOs without a PUBS", func() {
 			delete(shloMap, TagPUBS)
-			_, err := cs.handleSHLOMessage(shloMap)
+			err := cs.handleSHLOMessage(shloMap)
 			Expect(err).To(MatchError(qerr.Error(qerr.CryptoMessageParameterNotFound, "PUBS")))
 			Expect(aeadChanged).ToNot(BeClosed())
 		})
 
 		It("rejects SHLOs without a version list", func() {
 			delete(shloMap, TagVER)
-			_, err := cs.handleSHLOMessage(shloMap)
+			err := cs.handleSHLOMessage(shloMap)
 			Expect(err).To(MatchError(qerr.Error(qerr.InvalidCryptoMessageParameter, "server hello missing version list")))
 			Expect(aeadChanged).ToNot(BeClosed())
 		})
@@ -403,60 +416,38 @@ var _ = Describe("Client Crypto Setup", func() {
 			cs.negotiatedVersions = []protocol.VersionNumber{ver}
 			cs.receivedSecurePacket = true
 			b := &bytes.Buffer{}
-			utils.BigEndian.WriteUint32(b, uint32(ver))
+			utils.LittleEndian.WriteUint32(b, protocol.VersionNumberToTag(ver))
 			shloMap[TagVER] = b.Bytes()
-			_, err := cs.handleSHLOMessage(shloMap)
+			err := cs.handleSHLOMessage(shloMap)
 			Expect(err).ToNot(HaveOccurred())
 		})
 
 		It("reads the server nonce, if set", func() {
 			shloMap[TagSNO] = []byte("server nonce")
-			_, err := cs.handleSHLOMessage(shloMap)
+			err := cs.handleSHLOMessage(shloMap)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(cs.sno).To(Equal(shloMap[TagSNO]))
 		})
 
 		It("creates a forwardSecureAEAD", func() {
 			shloMap[TagSNO] = []byte("server nonce")
-			_, err := cs.handleSHLOMessage(shloMap)
+			err := cs.handleSHLOMessage(shloMap)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(cs.forwardSecureAEAD).ToNot(BeNil())
+			Expect(aeadChanged).To(Receive(Equal(protocol.EncryptionForwardSecure)))
+			Expect(aeadChanged).To(BeClosed())
 		})
 
 		It("reads the connection paramaters", func() {
-			shloMap[TagICSL] = []byte{13, 0, 0, 0} // 13 seconds
-			params, err := cs.handleSHLOMessage(shloMap)
+			shloMap[TagICSL] = []byte{3, 0, 0, 0} // 3 seconds
+			err := cs.handleSHLOMessage(shloMap)
 			Expect(err).ToNot(HaveOccurred())
-			Expect(params.IdleTimeout).To(Equal(13 * time.Second))
-		})
-
-		It("closes the aeadChanged when receiving an SHLO", func() {
-			HandshakeMessage{Tag: TagSHLO, Data: shloMap}.Write(&stream.dataToRead)
-			go func() {
-				defer GinkgoRecover()
-				err := cs.HandleCryptoStream()
-				Expect(err).ToNot(HaveOccurred())
-			}()
-			Eventually(aeadChanged).Should(Receive(Equal(protocol.EncryptionForwardSecure)))
-			Eventually(aeadChanged).Should(BeClosed())
-		})
-
-		It("passes the transport parameters on the channel", func() {
-			shloMap[TagSFCW] = []byte{0x0d, 0x00, 0xdf, 0xba}
-			HandshakeMessage{Tag: TagSHLO, Data: shloMap}.Write(&stream.dataToRead)
-			go func() {
-				defer GinkgoRecover()
-				err := cs.HandleCryptoStream()
-				Expect(err).ToNot(HaveOccurred())
-			}()
-			var params TransportParameters
-			Eventually(paramsChan).Should(Receive(&params))
-			Expect(params.StreamFlowControlWindow).To(Equal(protocol.ByteCount(0xbadf000d)))
+			Expect(cs.connectionParameters.GetIdleConnectionStateLifetime()).To(Equal(3 * time.Second))
 		})
 
 		It("errors if it can't read a connection parameter", func() {
 			shloMap[TagICSL] = []byte{3, 0, 0} // 1 byte too short
-			_, err := cs.handleSHLOMessage(shloMap)
+			err := cs.handleSHLOMessage(shloMap)
 			Expect(err).To(MatchError(qerr.InvalidCryptoMessageParameter))
 		})
 	})
@@ -491,31 +482,31 @@ var _ = Describe("Client Crypto Setup", func() {
 		})
 
 		It("has the right values for an inchoate CHLO", func() {
-			cs.version = cs.initialVersion - 1
 			cs.hostname = "sni-hostname"
 			certManager.commonCertificateHashes = []byte("common certs")
 			tags, err := cs.getTags()
 			Expect(err).ToNot(HaveOccurred())
 			Expect(string(tags[TagSNI])).To(Equal(cs.hostname))
 			Expect(tags[TagPDMD]).To(Equal([]byte("X509")))
-			Expect(tags[TagVER]).To(Equal([]byte("Q039")))
+			Expect(tags[TagVER]).To(Equal([]byte("Q037")))
 			Expect(tags[TagCCS]).To(Equal(certManager.commonCertificateHashes))
 			Expect(tags).ToNot(HaveKey(TagTCID))
 		})
 
-		It("requests to omit the connection ID", func() {
-			cs.params.OmitConnectionID = true
+		It("requests to truncate the connection ID", func() {
+			cs.params.RequestConnectionIDTruncation = true
 			tags, err := cs.getTags()
 			Expect(err).ToNot(HaveOccurred())
 			Expect(tags).To(HaveKeyWithValue(TagTCID, []byte{0, 0, 0, 0}))
 		})
 
 		It("adds the tags returned from the connectionParametersManager to the CHLO", func() {
-			pnTags := cs.params.getHelloMap()
-			Expect(pnTags).ToNot(BeEmpty())
+			cpmTags, err := cs.connectionParameters.GetHelloMap()
+			Expect(err).ToNot(HaveOccurred())
+			Expect(cpmTags).ToNot(BeEmpty())
 			tags, err := cs.getTags()
 			Expect(err).ToNot(HaveOccurred())
-			for t := range pnTags {
+			for t := range cpmTags {
 				Expect(tags).To(HaveKey(t))
 			}
 		})
@@ -603,7 +594,7 @@ var _ = Describe("Client Crypto Setup", func() {
 
 		doSHLO := func() {
 			cs.receivedSecurePacket = true
-			_, err := cs.handleSHLOMessage(shloMap)
+			err := cs.handleSHLOMessage(shloMap)
 			Expect(err).ToNot(HaveOccurred())
 		}
 
@@ -698,24 +689,21 @@ var _ = Describe("Client Crypto Setup", func() {
 
 		Context("null encryption", func() {
 			It("is used initially", func() {
-				cs.nullAEAD.(*mockcrypto.MockAEAD).EXPECT().Seal(nil, []byte("foobar"), protocol.PacketNumber(10), []byte{}).Return([]byte("foobar unencrypted"))
 				enc, sealer := cs.GetSealer()
 				Expect(enc).To(Equal(protocol.EncryptionUnencrypted))
-				d := sealer.Seal(nil, []byte("foobar"), 10, []byte{})
+				d := sealer.Seal(nil, []byte("foobar"), 0, []byte{})
 				Expect(d).To(Equal([]byte("foobar unencrypted")))
 			})
 
 			It("is used for the crypto stream", func() {
-				cs.nullAEAD.(*mockcrypto.MockAEAD).EXPECT().Seal(nil, []byte("foobar"), protocol.PacketNumber(1), []byte{}).Return([]byte("foobar unencrypted"))
 				enc, sealer := cs.GetSealerForCryptoStream()
 				Expect(enc).To(Equal(protocol.EncryptionUnencrypted))
-				d := sealer.Seal(nil, []byte("foobar"), 1, []byte{})
+				d := sealer.Seal(nil, []byte("foobar"), 0, []byte{})
 				Expect(d).To(Equal([]byte("foobar unencrypted")))
 			})
 
 			It("is accepted initially", func() {
-				cs.nullAEAD.(*mockcrypto.MockAEAD).EXPECT().Open(nil, []byte("unencrypted"), protocol.PacketNumber(1), []byte{}).Return([]byte("decrypted"), nil)
-				d, enc, err := cs.Open(nil, []byte("unencrypted"), 1, []byte{})
+				d, enc, err := cs.Open(nil, []byte("unencrypted"), 0, []byte{})
 				Expect(err).ToNot(HaveOccurred())
 				Expect(d).To(Equal([]byte("decrypted")))
 				Expect(enc).To(Equal(protocol.EncryptionUnencrypted))
@@ -723,11 +711,9 @@ var _ = Describe("Client Crypto Setup", func() {
 
 			It("is accepted before the server sent an encrypted packet", func() {
 				doCompleteREJ()
-				cs.secureAEAD.(*mockcrypto.MockAEAD).EXPECT().Open(nil, []byte("unencrypted"), protocol.PacketNumber(1), []byte{}).Return(nil, errors.New("authentication failed"))
-				cs.nullAEAD.(*mockcrypto.MockAEAD).EXPECT().Open(nil, []byte("unencrypted"), protocol.PacketNumber(1), []byte{}).Return([]byte("decrypted"), nil)
 				cs.receivedSecurePacket = false
 				Expect(cs.secureAEAD).ToNot(BeNil())
-				d, enc, err := cs.Open(nil, []byte("unencrypted"), 1, []byte{})
+				d, enc, err := cs.Open(nil, []byte("unencrypted"), 0, []byte{})
 				Expect(err).ToNot(HaveOccurred())
 				Expect(d).To(Equal([]byte("decrypted")))
 				Expect(enc).To(Equal(protocol.EncryptionUnencrypted))
@@ -735,16 +721,14 @@ var _ = Describe("Client Crypto Setup", func() {
 
 			It("is not accepted after the server sent an encrypted packet", func() {
 				doCompleteREJ()
-				cs.secureAEAD.(*mockcrypto.MockAEAD).EXPECT().Open(nil, []byte("unencrypted"), protocol.PacketNumber(3), []byte{}).Return(nil, errors.New("authentication failed"))
 				cs.receivedSecurePacket = true
-				_, enc, err := cs.Open(nil, []byte("unencrypted"), 3, []byte{})
+				_, enc, err := cs.Open(nil, []byte("unecnrypted"), 0, []byte{})
 				Expect(err).To(MatchError("authentication failed"))
 				Expect(enc).To(Equal(protocol.EncryptionUnspecified))
 			})
 
 			It("errors if the has the wrong hash", func() {
-				cs.nullAEAD.(*mockcrypto.MockAEAD).EXPECT().Open(nil, []byte("not unencrypted"), protocol.PacketNumber(3), []byte{}).Return(nil, errors.New("authentication failed"))
-				_, enc, err := cs.Open(nil, []byte("not unencrypted"), 3, []byte{})
+				_, enc, err := cs.Open(nil, []byte("not unecnrypted"), 0, []byte{})
 				Expect(err).To(MatchError("authentication failed"))
 				Expect(enc).To(Equal(protocol.EncryptionUnspecified))
 			})
@@ -753,18 +737,16 @@ var _ = Describe("Client Crypto Setup", func() {
 		Context("initial encryption", func() {
 			It("is used immediately when available", func() {
 				doCompleteREJ()
-				cs.secureAEAD.(*mockcrypto.MockAEAD).EXPECT().Seal(nil, []byte("foobar"), protocol.PacketNumber(1), []byte{}).Return([]byte("foobar secure"))
 				cs.receivedSecurePacket = false
 				enc, sealer := cs.GetSealer()
 				Expect(enc).To(Equal(protocol.EncryptionSecure))
-				d := sealer.Seal(nil, []byte("foobar"), 1, []byte{})
-				Expect(d).To(Equal([]byte("foobar secure")))
+				d := sealer.Seal(nil, []byte("foobar"), 0, []byte{})
+				Expect(d).To(Equal([]byte("foobar  normal sec")))
 			})
 
 			It("is accepted", func() {
 				doCompleteREJ()
-				cs.secureAEAD.(*mockcrypto.MockAEAD).EXPECT().Open(nil, []byte("encrypted"), protocol.PacketNumber(3), []byte{}).Return([]byte("decrypted"), nil)
-				d, enc, err := cs.Open(nil, []byte("encrypted"), 3, []byte{})
+				d, enc, err := cs.Open(nil, []byte("encrypted"), 0, []byte{})
 				Expect(err).ToNot(HaveOccurred())
 				Expect(d).To(Equal([]byte("decrypted")))
 				Expect(enc).To(Equal(protocol.EncryptionSecure))
@@ -773,18 +755,16 @@ var _ = Describe("Client Crypto Setup", func() {
 
 			It("is not used after receiving the SHLO", func() {
 				doSHLO()
-				cs.forwardSecureAEAD.(*mockcrypto.MockAEAD).EXPECT().Open(nil, []byte("encrypted"), protocol.PacketNumber(30), []byte{}).Return(nil, errors.New("authentication failed"))
-				_, enc, err := cs.Open(nil, []byte("encrypted"), 30, []byte{})
+				_, enc, err := cs.Open(nil, []byte("encrypted"), 0, []byte{})
 				Expect(err).To(MatchError("authentication failed"))
 				Expect(enc).To(Equal(protocol.EncryptionUnspecified))
 			})
 
 			It("is not used for the crypto stream", func() {
 				doCompleteREJ()
-				cs.nullAEAD.(*mockcrypto.MockAEAD).EXPECT().Seal(nil, []byte("foobar"), protocol.PacketNumber(3), []byte{}).Return([]byte("foobar unencrypted"))
 				enc, sealer := cs.GetSealerForCryptoStream()
 				Expect(enc).To(Equal(protocol.EncryptionUnencrypted))
-				d := sealer.Seal(nil, []byte("foobar"), 3, []byte{})
+				d := sealer.Seal(nil, []byte("foobar"), 0, []byte{})
 				Expect(d).To(Equal([]byte("foobar unencrypted")))
 			})
 		})
@@ -792,43 +772,38 @@ var _ = Describe("Client Crypto Setup", func() {
 		Context("forward-secure encryption", func() {
 			It("is used after receiving the SHLO", func() {
 				doSHLO()
-				cs.forwardSecureAEAD.(*mockcrypto.MockAEAD).EXPECT().Open(nil, []byte("shlo"), protocol.PacketNumber(4), []byte{})
-				cs.forwardSecureAEAD.(*mockcrypto.MockAEAD).EXPECT().Seal(nil, []byte("foobar"), protocol.PacketNumber(10), []byte{}).Return([]byte("foobar forward sec"))
-				_, enc, err := cs.Open(nil, []byte("shlo"), 4, []byte{})
+				_, enc, err := cs.Open(nil, []byte("forward secure encrypted"), 0, []byte{})
 				Expect(err).ToNot(HaveOccurred())
 				Expect(enc).To(Equal(protocol.EncryptionForwardSecure))
 				enc, sealer := cs.GetSealer()
 				Expect(enc).To(Equal(protocol.EncryptionForwardSecure))
-				d := sealer.Seal(nil, []byte("foobar"), 10, []byte{})
+				d := sealer.Seal(nil, []byte("foobar"), 0, []byte{})
 				Expect(d).To(Equal([]byte("foobar forward sec")))
 			})
 
 			It("is not used for the crypto stream", func() {
 				doSHLO()
-				cs.nullAEAD.(*mockcrypto.MockAEAD).EXPECT().Seal(nil, []byte("foobar"), protocol.PacketNumber(3), []byte{}).Return([]byte("foobar unencrypted"))
 				enc, sealer := cs.GetSealerForCryptoStream()
 				Expect(enc).To(Equal(protocol.EncryptionUnencrypted))
-				d := sealer.Seal(nil, []byte("foobar"), 3, []byte{})
+				d := sealer.Seal(nil, []byte("foobar"), 0, []byte{})
 				Expect(d).To(Equal([]byte("foobar unencrypted")))
 			})
 		})
 
 		Context("forcing encryption levels", func() {
 			It("forces null encryption", func() {
-				cs.nullAEAD.(*mockcrypto.MockAEAD).EXPECT().Seal(nil, []byte("foobar"), protocol.PacketNumber(4), []byte{}).Return([]byte("foobar unencrypted"))
 				sealer, err := cs.GetSealerWithEncryptionLevel(protocol.EncryptionUnencrypted)
 				Expect(err).ToNot(HaveOccurred())
-				d := sealer.Seal(nil, []byte("foobar"), 4, []byte{})
+				d := sealer.Seal(nil, []byte("foobar"), 0, []byte{})
 				Expect(d).To(Equal([]byte("foobar unencrypted")))
 			})
 
 			It("forces initial encryption", func() {
 				doCompleteREJ()
-				cs.secureAEAD.(*mockcrypto.MockAEAD).EXPECT().Seal(nil, []byte("foobar"), protocol.PacketNumber(3), []byte{}).Return([]byte("foobar secure"))
 				sealer, err := cs.GetSealerWithEncryptionLevel(protocol.EncryptionSecure)
 				Expect(err).ToNot(HaveOccurred())
-				d := sealer.Seal(nil, []byte("foobar"), 3, []byte{})
-				Expect(d).To(Equal([]byte("foobar secure")))
+				d := sealer.Seal(nil, []byte("foobar"), 0, []byte{})
+				Expect(d).To(Equal([]byte("foobar  normal sec")))
 			})
 
 			It("errors of no AEAD for initial encryption is available", func() {
@@ -839,10 +814,9 @@ var _ = Describe("Client Crypto Setup", func() {
 
 			It("forces forward-secure encryption", func() {
 				doSHLO()
-				cs.forwardSecureAEAD.(*mockcrypto.MockAEAD).EXPECT().Seal(nil, []byte("foobar"), protocol.PacketNumber(4), []byte{}).Return([]byte("foobar forward sec"))
 				sealer, err := cs.GetSealerWithEncryptionLevel(protocol.EncryptionForwardSecure)
 				Expect(err).ToNot(HaveOccurred())
-				d := sealer.Seal(nil, []byte("foobar"), 4, []byte{})
+				d := sealer.Seal(nil, []byte("foobar"), 0, []byte{})
 				Expect(d).To(Equal([]byte("foobar forward sec")))
 			})
 

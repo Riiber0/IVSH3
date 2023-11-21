@@ -6,10 +6,10 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
-	"github.com/lucas-clemente/quic-go/fec"
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -71,16 +71,6 @@ func (s *mockSession) RemoteAddr() net.Addr {
 func (s *mockSession) Context() context.Context {
 	return s.ctx
 }
-
-// sets the FEC Scheme used by this session
-func (s *mockSession) SetFECScheme(scheme fec.FECScheme) { panic("not implemented") }
-
-// gets the FEC Scheme used by this session
-func (s *mockSession) GetFECScheme() fec.FECScheme { panic("not implemented") }
-
-func (s *mockSession) SetRedundancyController(c fec.RedundancyController) { panic("not implemented") }
-
-func (s *mockSession) GetRedundancyController() fec.RedundancyController { panic("not implemented") }
 
 var _ = Describe("H2 server", func() {
 	var (
@@ -319,6 +309,19 @@ var _ = Describe("H2 server", func() {
 		Expect(session.closedWithError).To(MatchError(qerr.Error(qerr.HeadersStreamDataDecompressFailure, "cannot read frame")))
 	})
 
+	It("errors if the accepted header stream has the wrong stream ID", func() {
+		headerStream := &mockStream{id: 1}
+		headerStream.dataToRead.Write([]byte{
+			0x0, 0x0, 0x11, 0x1, 0x4, 0x0, 0x0, 0x0, 0x5,
+			// Taken from https://http2.github.io/http2-spec/compression.html#request.examples.with.huffman.coding
+			0x82, 0x86, 0x84, 0x41, 0x8c, 0xf1, 0xe3, 0xc2, 0xe5, 0xf2, 0x3a, 0x6b, 0xa0, 0xab, 0x90, 0xf4, 0xff,
+		})
+		session.streamToAccept = headerStream
+		go s.handleHeaderStream(session)
+		Eventually(func() bool { return session.closed }).Should(BeTrue())
+		Expect(session.closedWithError).To(MatchError(qerr.Error(qerr.InternalError, "h2quic server BUG: header stream does not have stream ID 3")))
+	})
+
 	It("supports closing after first request", func() {
 		s.CloseAfterFirstRequest = true
 		s.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
@@ -357,7 +360,7 @@ var _ = Describe("H2 server", func() {
 		getExpectedHeader := func(versions []protocol.VersionNumber) http.Header {
 			var versionsAsString []string
 			for _, v := range versions {
-				versionsAsString = append(versionsAsString, v.ToAltSvc())
+				versionsAsString = append(versionsAsString, strconv.Itoa(int(v)))
 			}
 			return http.Header{
 				"Alt-Svc": {fmt.Sprintf(`quic=":443"; ma=2592000; v="%s"`, strings.Join(versionsAsString, ","))},

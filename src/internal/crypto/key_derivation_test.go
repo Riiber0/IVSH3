@@ -10,26 +10,24 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-type mockTLSExporter struct {
+type mockMintController struct {
 	hash          crypto.Hash
 	computerError error
 }
 
-var _ TLSExporter = &mockTLSExporter{}
+var _ MintController = &mockMintController{}
 
-func (c *mockTLSExporter) Handshake() mint.Alert { panic("not implemented") }
+func (c *mockMintController) Handshake() mint.Alert { panic("not implemented") }
 
-func (c *mockTLSExporter) GetCipherSuite() mint.CipherSuiteParams {
+func (c *mockMintController) GetCipherSuite() mint.CipherSuiteParams {
 	return mint.CipherSuiteParams{
-		Hash: c.hash,
-		KeyLengths: map[string]int{
-			"key": 32,
-			"iv":  12,
-		},
+		Hash:   c.hash,
+		KeyLen: 32,
+		IvLen:  12,
 	}
 }
 
-func (c *mockTLSExporter) ComputeExporter(label string, context []byte, keyLength int) ([]byte, error) {
+func (c *mockMintController) ComputeExporter(label string, context []byte, keyLength int) ([]byte, error) {
 	if c.computerError != nil {
 		return nil, c.computerError
 	}
@@ -38,9 +36,9 @@ func (c *mockTLSExporter) ComputeExporter(label string, context []byte, keyLengt
 
 var _ = Describe("Key Derivation", func() {
 	It("derives keys", func() {
-		clientAEAD, err := DeriveAESKeys(&mockTLSExporter{hash: crypto.SHA256}, protocol.PerspectiveClient)
+		clientAEAD, err := DeriveAESKeys(&mockMintController{hash: crypto.SHA256}, protocol.PerspectiveClient)
 		Expect(err).ToNot(HaveOccurred())
-		serverAEAD, err := DeriveAESKeys(&mockTLSExporter{hash: crypto.SHA256}, protocol.PerspectiveServer)
+		serverAEAD, err := DeriveAESKeys(&mockMintController{hash: crypto.SHA256}, protocol.PerspectiveServer)
 		Expect(err).ToNot(HaveOccurred())
 		ciphertext := clientAEAD.Seal(nil, []byte("foobar"), 0, []byte("aad"))
 		data, err := serverAEAD.Open(nil, ciphertext, 0, []byte("aad"))
@@ -49,9 +47,9 @@ var _ = Describe("Key Derivation", func() {
 	})
 
 	It("fails when different hash functions are used", func() {
-		clientAEAD, err := DeriveAESKeys(&mockTLSExporter{hash: crypto.SHA256}, protocol.PerspectiveClient)
+		clientAEAD, err := DeriveAESKeys(&mockMintController{hash: crypto.SHA256}, protocol.PerspectiveClient)
 		Expect(err).ToNot(HaveOccurred())
-		serverAEAD, err := DeriveAESKeys(&mockTLSExporter{hash: crypto.SHA512}, protocol.PerspectiveServer)
+		serverAEAD, err := DeriveAESKeys(&mockMintController{hash: crypto.SHA512}, protocol.PerspectiveServer)
 		Expect(err).ToNot(HaveOccurred())
 		ciphertext := clientAEAD.Seal(nil, []byte("foobar"), 0, []byte("aad"))
 		_, err = serverAEAD.Open(nil, ciphertext, 0, []byte("aad"))
@@ -60,7 +58,7 @@ var _ = Describe("Key Derivation", func() {
 
 	It("fails when computing the exporter fails", func() {
 		testErr := errors.New("test error")
-		_, err := DeriveAESKeys(&mockTLSExporter{hash: crypto.SHA256, computerError: testErr}, protocol.PerspectiveClient)
+		_, err := DeriveAESKeys(&mockMintController{hash: crypto.SHA256, computerError: testErr}, protocol.PerspectiveClient)
 		Expect(err).To(MatchError(testErr))
 	})
 })

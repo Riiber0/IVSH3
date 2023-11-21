@@ -20,7 +20,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/caddyserver/caddy/caddyhttp/httpserver"
+	"github.com/mholt/caddy/caddyhttp/httpserver"
 )
 
 func TestStatus(t *testing.T) {

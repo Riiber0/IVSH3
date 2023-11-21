@@ -4,7 +4,6 @@ package qerr
 
 import "fmt"
 
-//go:generate stringer -type=ErrorCode
 const (
 	_ErrorCode_name_0 = "InternalErrorStreamDataAfterTerminationInvalidPacketHeaderInvalidFrameDataInvalidFecDataInvalidRstStreamDataInvalidConnectionCloseDataInvalidGoawayDataInvalidAckDataInvalidVersionNegotiationPacketInvalidPublicRstPacketDecryptionFailureEncryptionFailurePacketTooLarge"
 	_ErrorCode_name_1 = "PeerGoingAwayInvalidStreamIDTooManyOpenStreamsPublicResetInvalidVersion"

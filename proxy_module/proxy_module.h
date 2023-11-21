@@ -69,9 +69,8 @@ extern "C" {
 #endif
 
 extern void ClientSetup(GoUint8 usequic, GoUint8 mp, GoUint8 keepalive, GoString scheduler, GoString cc);
-extern void FECSetup(GoUint8 use, GoString config);
 extern void CloseConnection();
-extern GoInt DownloadSegment(GoString segmentURL, GoString filename);
+extern GoInt DownloadSegment(GoString segmentURL);
 extern void StartLogging(GoUint period);
 extern void StopLogging();
 

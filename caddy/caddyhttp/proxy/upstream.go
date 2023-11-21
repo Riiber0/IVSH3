@@ -36,8 +36,8 @@ import (
 
 	"crypto/tls"
 
-	"github.com/caddyserver/caddy/caddyfile"
-	"github.com/caddyserver/caddy/caddyhttp/httpserver"
+	"github.com/mholt/caddy/caddyfile"
+	"github.com/mholt/caddy/caddyhttp/httpserver"
 )
 
 var (
@@ -76,7 +76,6 @@ type staticUpstream struct {
 	CaCertPool                   *x509.CertPool
 	upstreamHeaderReplacements   headerReplacements
 	downstreamHeaderReplacements headerReplacements
-	ClientKeyPair                *tls.Certificate
 }
 
 type srvResolver interface {
@@ -266,10 +265,6 @@ func (u *staticUpstream) NewHost(host string) (*UpstreamHost, error) {
 
 	if u.CaCertPool != nil {
 		uh.ReverseProxy.UseOwnCACertificates(u.CaCertPool)
-	}
-
-	if u.ClientKeyPair != nil {
-		uh.ReverseProxy.UseClientCertificates(u.ClientKeyPair)
 	}
 
 	return uh, nil
@@ -569,20 +564,6 @@ func parseBlock(c *caddyfile.Dispenser, u *staticUpstream, hasSrv bool) error {
 			return c.Errf("unable to parse timeout duration '%s'", c.Val())
 		}
 		u.Timeout = dur
-	case "tls_client":
-		if !c.NextArg() {
-                        return c.ArgErr()
-                }
-                clientCertFile := c.Val()
-		if !c.NextArg() {
-                        return c.ArgErr()
-                }
-                clientKeyFile := c.Val()
-		clientKeyPair, err := tls.LoadX509KeyPair(clientCertFile, clientKeyFile)
-        	if (err != nil) {
-                	return c.Errf("unable to load keypair from certfile:%s keyfile:%s", clientCertFile, clientKeyFile)
-        	}
-		u.ClientKeyPair = &clientKeyPair
 	default:
 		return c.Errf("unknown property '%s'", c.Val())
 	}
@@ -664,7 +645,7 @@ func (u *staticUpstream) healthCheck() {
 					return false
 				}
 				// TODO ReadAll will be replaced if deemed necessary
-				//      See https://github.com/caddyserver/caddy/pull/1691
+				//      See https://github.com/mholt/caddy/pull/1691
 				buf, err := ioutil.ReadAll(r.Body)
 				if err != nil {
 					return true

@@ -5,8 +5,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"github.com/lucas-clemente/quic-go"
-	"github.com/lucas-clemente/quic-go/internal/protocol"
 	"io"
 	"io/ioutil"
 	"log"
@@ -22,10 +20,6 @@ import (
 	"github.com/lucas-clemente/quic-go/h2quic"
 	"github.com/lucas-clemente/quic-go/internal/utils"
 )
-
-var NUMBER_OF_SOURCE_SYMBOLS uint = 20
-var NUMBER_OF_REPAIR_SYMBOLS uint = 10
-var NUMBER_OF_INTERLEAVED_BLOCKS uint = 1
 
 type binds []string
 
@@ -103,25 +97,6 @@ func init() {
 				<input type="submit">
 			</form></body></html>`)
 	})
-
-	http.HandleFunc("/demo/download", func(w http.ResponseWriter, r *http.Request) {
-		data := make([]byte, 1024)
-		mw := multipart.NewWriter(w)
-		w.Header().Set("Content-Type", mw.FormDataContentType())
-		for i := 0; i < 12800; i++ {
-			fw, err := mw.CreateFormField("value")
-
-			if err != nil {
-				panic("failed creating form field")
-				return
-			}
-
-			if size, err := fw.Write(data); size < 1024 || err != nil {
-				panic("failed writing data")
-				return
-			}
-		}
-	})
 }
 
 func getBuildDir() string {
@@ -136,7 +111,7 @@ func getBuildDir() string {
 func main() {
 	// defer profile.Start().Stop()
 	go func() {
-		log.Println(http.ListenAndServe("localhost:6060", nil))
+		log.Println(http.ListenAndServe("0.0.0.0:6060", nil))
 	}()
 	// runtime.SetBlockProfileRate(1)
 
@@ -146,8 +121,6 @@ func main() {
 	certPath := flag.String("certpath", getBuildDir(), "certificate directory")
 	www := flag.String("www", "/var/www", "www data")
 	tcp := flag.Bool("tcp", false, "also listen on TCP")
-	fecSchemeFlag := flag.String("fecScheme", "rs", "rs, rlc or rlc")
-	multipath := flag.Bool("multipath", false, "uses multiple paths")
 	flag.Parse()
 
 	if *verbose {
@@ -157,35 +130,13 @@ func main() {
 	}
 	utils.SetLogTimeFormat("")
 
-	var maxPathID uint8
-
-	var fecSchemeArg string
-
-	fecSchemeArg = *fecSchemeFlag
-	maxPathID = 0
-	if *multipath {
-		maxPathID = 2
-	}
-
-	var fs quic.FECSchemeID
-	if fecSchemeArg == "rs" {
-		fs = quic.ReedSolomonFECScheme
-	} else if fecSchemeArg == "xor" {
-		fs = quic.XORFECScheme
-		NUMBER_OF_INTERLEAVED_BLOCKS = NUMBER_OF_REPAIR_SYMBOLS
-		NUMBER_OF_SOURCE_SYMBOLS /= NUMBER_OF_REPAIR_SYMBOLS
-		NUMBER_OF_REPAIR_SYMBOLS = 1
-	} else {
-		fs = quic.RLCFECScheme
-	}
-
 	certFile := *certPath + "/fullchain.pem"
 	keyFile := *certPath + "/privkey.pem"
 
 	http.Handle("/", http.FileServer(http.Dir(*www)))
 
 	if len(bs) == 0 {
-		bs = binds{"localhost:6121"}
+		bs = binds{"0.0.0.0:6121"}
 	}
 
 	var wg sync.WaitGroup
@@ -197,14 +148,7 @@ func main() {
 			if *tcp {
 				err = h2quic.ListenAndServe(bCap, certFile, keyFile, nil)
 			} else {
-				//err = h2quic.ListenAndServeQUIC(bCap, certFile, keyFile, nil)
-				var config = quic.Config{
-					Versions:         []quic.VersionNumber{protocol.VersionMP},
-					MaxPathID:        maxPathID,
-					FECScheme:        fs,
-					SchedulingScheme: protocol.SchedRR,
-				}
-				err = h2quic.ListenAndServeQUICWIthConfig(bCap, certFile, keyFile, nil, &config)
+				err = h2quic.ListenAndServeQUIC(bCap, certFile, keyFile, nil)
 			}
 			if err != nil {
 				fmt.Println(err)

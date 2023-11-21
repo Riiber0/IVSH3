@@ -38,39 +38,16 @@ func newMockStream(id protocol.StreamID) *mockStream {
 	return s
 }
 
-func (s *mockStream) Close() error                          { s.closed = true; s.ctxCancel(); return nil }
-func (s *mockStream) Reset(error)                           { s.reset = true }
-func (s *mockStream) CloseRemote(offset protocol.ByteCount) { s.remoteClosed = true; s.ctxCancel() }
-func (s mockStream) StreamID() protocol.StreamID            { return s.id }
-func (s *mockStream) Context() context.Context              { return s.ctx }
-func (s *mockStream) SetDeadline(time.Time) error           { panic("not implemented") }
-func (s *mockStream) SetReadDeadline(time.Time) error       { panic("not implemented") }
-func (s *mockStream) SetWriteDeadline(time.Time) error      { panic("not implemented") }
-func (s *mockStream) GetBytesSent() protocol.ByteCount      { panic("not implemented") }
-func (s *mockStream) GetBytesRetrans() protocol.ByteCount   { panic("not implemented") }
-
-// Returns true if the stream is a Unreliable Stream, false otherwise
-func (s *mockStream) IsUnreliable() bool { panic("not implemented") }
-
-// Sets this stream as a Unreliable stream if val is true.
-func (s *mockStream) SetUnreliable(val bool) { panic("not implemented") }
-
-// Sets the retransmission deadline for this stream if it is unreliable
-func (s *mockStream) SetRetransmissionDeadline(val time.Duration) { panic("not implemented") }
-func (s *mockStream) GetRetransmissionDeadLine() time.Duration    { panic("not implemented") }
-
-// the reliability dealine is the amount of time a reader is ok to wait on an unreliable stream before skipping data if the next data are not present
-func (s *mockStream) SetReliabilityDeadline(val time.Duration) { panic("not implemented") }
-func (s *mockStream) GetReliabilityDeadline() time.Duration    { panic("not implemented") }
-
-// sets the stream replay buffer size. A stream will deliver its data as soon as the replay buffer is full or the stream is closed
-func (s *mockStream) SetReplayBufferSize(size uint64) { panic("not implemented") }
-
-// gets the stream replay buffer size. A stream will deliver its data as soon as the replay buffer is full or the stream is closed
-func (s *mockStream) GetReplayBufferSize() uint64 { panic("not implemented") }
-
-func (s *mockStream) SetMessageMode(val bool) { panic("not implemented") }
-func (s *mockStream) GetMessageMode() bool    { panic("not implemented") }
+func (s *mockStream) Close() error                                 { s.closed = true; s.ctxCancel(); return nil }
+func (s *mockStream) Reset(error)                                  { s.reset = true }
+func (s *mockStream) CloseRemote(offset protocol.ByteCount)        { s.remoteClosed = true; s.ctxCancel() }
+func (s mockStream) StreamID() protocol.StreamID                   { return s.id }
+func (s *mockStream) Context() context.Context                     { return s.ctx }
+func (s *mockStream) SetDeadline(time.Time) error                  { panic("not implemented") }
+func (s *mockStream) SetReadDeadline(time.Time) error              { panic("not implemented") }
+func (s *mockStream) SetWriteDeadline(time.Time) error             { panic("not implemented") }
+func (s *mockStream) GetBytesSent() (protocol.ByteCount, error)    { panic("not implemented") }
+func (s *mockStream) GetBytesRetrans() (protocol.ByteCount, error) { panic("not implemented") }
 
 func (s *mockStream) Read(p []byte) (int, error) {
 	n, _ := s.dataToRead.Read(p)

@@ -4,11 +4,6 @@ Documentation=https://caddyserver.com/docs
 After=network-online.target
 Wants=network-online.target systemd-networkd-wait-online.service
 
-; Do not allow the process to be restarted in a tight loop. If the
-; process fails to start, something critical needs to be fixed.
-StartLimitIntervalSec=14400
-StartLimitBurst=10
-
 [Service]
 Restart=on-abnormal
 
@@ -20,7 +15,7 @@ Group=www-data
 Environment=CADDYPATH=/etc/ssl/caddy
 
 ; Always set "-root" to something safe in case it gets forgotten in the Caddyfile.
-ExecStart=/usr/local/bin/caddy -log stdout -log-timestamps=false -agree=true -conf=/etc/caddy/Caddyfile -root=/var/tmp
+ExecStart=/usr/local/bin/caddy -log stdout -agree=true -conf=/etc/caddy/Caddyfile -root=/var/tmp
 ExecReload=/bin/kill -USR1 $MAINPID
 
 ; Use graceful shutdown with a reasonable timeout
@@ -43,7 +38,6 @@ ProtectHome=true
 ProtectSystem=full
 ; … except /etc/ssl/caddy, because we want Letsencrypt-certificates there.
 ;   This merely retains r/w access rights, it does not add any new. Must still be writable on the host!
-ReadWritePaths=/etc/ssl/caddy
 ReadWriteDirectories=/etc/ssl/caddy
 
 ; The following additional security directives only work with systemd v229 or later.

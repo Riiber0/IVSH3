@@ -20,13 +20,13 @@ type packetData []byte
 var _ = Describe("QUIC Proxy", func() {
 	makePacket := func(p protocol.PacketNumber, payload []byte) []byte {
 		b := &bytes.Buffer{}
-		hdr := wire.Header{
-			PacketNumber:     p,
-			PacketNumberLen:  protocol.PacketNumberLen6,
-			ConnectionID:     1337,
-			OmitConnectionID: false,
+		hdr := wire.PublicHeader{
+			PacketNumber:         p,
+			PacketNumberLen:      protocol.PacketNumberLen6,
+			ConnectionID:         1337,
+			TruncateConnectionID: false,
 		}
-		hdr.Write(b, protocol.PerspectiveServer, protocol.VersionWhatever)
+		hdr.Write(b, protocol.VersionWhatever, protocol.PerspectiveServer)
 		raw := b.Bytes()
 		raw = append(raw, payload...)
 		return raw
@@ -59,11 +59,8 @@ var _ = Describe("QUIC Proxy", func() {
 			// sometimes it takes a while for the OS to free the port
 			Eventually(func() error {
 				ln, err := net.ListenUDP("udp", addr)
-				if err != nil {
-					return err
-				}
-				ln.Close()
-				return nil
+				defer ln.Close()
+				return err
 			}).ShouldNot(HaveOccurred())
 		})
 

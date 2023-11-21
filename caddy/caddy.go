@@ -20,7 +20,7 @@
 //   2. Call LoadCaddyfile() to get the Caddyfile.
 //      Pass in the name of the server type (like "http").
 //      Make sure the server type's package is imported
-//      (import _ "github.com/caddyserver/caddy/caddyhttp").
+//      (import _ "github.com/mholt/caddy/caddyhttp").
 //   3. Call caddy.Start() to start Caddy. You get back
 //      an Instance, on which you can call Restart() to
 //      restart it or Stop() to stop it.
@@ -43,8 +43,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/caddyserver/caddy/caddyfile"
-	"github.com/caddyserver/caddy/telemetry"
+	"github.com/mholt/caddy/caddyfile"
+	"github.com/mholt/caddy/telemetry"
 )
 
 // Configurable application parameters
@@ -600,12 +600,6 @@ func ValidateAndExecuteDirectives(cdyfile Input, inst *Instance, justValidate bo
 		return err
 	}
 
-	for _, sb := range sblocks {
-		for dir := range sb.Tokens {
-			telemetry.AppendUnique("directives", dir)
-		}
-	}
-
 	inst.context = stype.NewContext(inst)
 	if inst.context == nil {
 		return fmt.Errorf("server type %s produced a nil Context", stypeName)
@@ -888,10 +882,6 @@ func Stop() error {
 		}
 		inst := instances[0]
 		instancesMu.Unlock()
-		// Increase the instance waitgroup so that the last wait() call in
-		// caddymain/run.go blocks until this server instance has shut down
-		inst.wg.Add(1)
-		defer inst.wg.Done()
 		if err := inst.Stop(); err != nil {
 			log.Printf("[ERROR] Stopping %s: %v", inst.serverType, err)
 		}

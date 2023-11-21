@@ -9,7 +9,7 @@ import (
 
 	"os"
 
-	"github.com/lucas-clemente/quic-go/internal/mocks"
+	"github.com/lucas-clemente/quic-go/internal/mocks/mocks_fc"
 	"github.com/lucas-clemente/quic-go/internal/protocol"
 	"github.com/lucas-clemente/quic-go/internal/wire"
 
@@ -30,7 +30,7 @@ var _ = Describe("Stream", func() {
 		resetCalledForStream protocol.StreamID
 		resetCalledAtOffset  protocol.ByteCount
 
-		mockFC *mocks.MockStreamFlowController
+		mockFcm *mocks_fc.MockFlowControlManager
 	)
 
 	// in the tests for the stream deadlines we set a deadline
@@ -58,8 +58,8 @@ var _ = Describe("Stream", func() {
 	BeforeEach(func() {
 		onDataCalled = false
 		resetCalled = false
-		mockFC = mocks.NewMockStreamFlowController(mockCtrl)
-		str = newStream(streamID, onData, onReset, mockFC, protocol.VersionWhatever)
+		mockFcm = mocks_fc.NewMockFlowControlManager(mockCtrl)
+		str = newStream(streamID, onData, onReset, mockFcm)
 
 		timeout := scaleDuration(250 * time.Millisecond)
 		strWithTimeout = struct {
@@ -77,9 +77,8 @@ var _ = Describe("Stream", func() {
 
 	Context("reading", func() {
 		It("reads a single StreamFrame", func() {
-			mockFC.EXPECT().UpdateHighestReceived(protocol.ByteCount(4), false)
-			mockFC.EXPECT().AddBytesRead(protocol.ByteCount(4))
-			mockFC.EXPECT().GetHighestReceived().Return(protocol.ByteCount(4)).AnyTimes()
+			mockFcm.EXPECT().UpdateHighestReceived(streamID, protocol.ByteCount(4))
+			mockFcm.EXPECT().AddBytesRead(streamID, protocol.ByteCount(4))
 			frame := wire.StreamFrame{
 				Offset: 0,
 				Data:   []byte{0xDE, 0xAD, 0xBE, 0xEF},
@@ -94,10 +93,9 @@ var _ = Describe("Stream", func() {
 		})
 
 		It("reads a single StreamFrame in multiple goes", func() {
-			mockFC.EXPECT().UpdateHighestReceived(protocol.ByteCount(4), false)
-			mockFC.EXPECT().GetHighestReceived().Return(protocol.ByteCount(4)).AnyTimes()
-			mockFC.EXPECT().AddBytesRead(protocol.ByteCount(2))
-			mockFC.EXPECT().AddBytesRead(protocol.ByteCount(2))
+			mockFcm.EXPECT().UpdateHighestReceived(streamID, protocol.ByteCount(4))
+			mockFcm.EXPECT().AddBytesRead(streamID, protocol.ByteCount(2))
+			mockFcm.EXPECT().AddBytesRead(streamID, protocol.ByteCount(2))
 			frame := wire.StreamFrame{
 				Offset: 0,
 				Data:   []byte{0xDE, 0xAD, 0xBE, 0xEF},
@@ -116,9 +114,9 @@ var _ = Describe("Stream", func() {
 		})
 
 		It("reads all data available", func() {
-			mockFC.EXPECT().UpdateHighestReceived(protocol.ByteCount(2), false)
-			mockFC.EXPECT().UpdateHighestReceived(protocol.ByteCount(4), false)
-			mockFC.EXPECT().AddBytesRead(protocol.ByteCount(2)).Times(2)
+			mockFcm.EXPECT().UpdateHighestReceived(streamID, protocol.ByteCount(2))
+			mockFcm.EXPECT().UpdateHighestReceived(streamID, protocol.ByteCount(4))
+			mockFcm.EXPECT().AddBytesRead(streamID, protocol.ByteCount(2)).Times(2)
 			frame1 := wire.StreamFrame{
 				Offset: 0,
 				Data:   []byte{0xDE, 0xAD},
@@ -130,7 +128,6 @@ var _ = Describe("Stream", func() {
 			err := str.AddStreamFrame(&frame1)
 			Expect(err).ToNot(HaveOccurred())
 			err = str.AddStreamFrame(&frame2)
-			mockFC.EXPECT().GetHighestReceived().Return(protocol.ByteCount(4)).AnyTimes()
 			Expect(err).ToNot(HaveOccurred())
 			b := make([]byte, 6)
 			n, err := strWithTimeout.Read(b)
@@ -140,9 +137,9 @@ var _ = Describe("Stream", func() {
 		})
 
 		It("assembles multiple StreamFrames", func() {
-			mockFC.EXPECT().UpdateHighestReceived(protocol.ByteCount(2), false)
-			mockFC.EXPECT().UpdateHighestReceived(protocol.ByteCount(4), false)
-			mockFC.EXPECT().AddBytesRead(protocol.ByteCount(2)).Times(2)
+			mockFcm.EXPECT().UpdateHighestReceived(streamID, protocol.ByteCount(2))
+			mockFcm.EXPECT().UpdateHighestReceived(streamID, protocol.ByteCount(4))
+			mockFcm.EXPECT().AddBytesRead(streamID, protocol.ByteCount(2)).Times(2)
 			frame1 := wire.StreamFrame{
 				Offset: 0,
 				Data:   []byte{0xDE, 0xAD},
@@ -154,7 +151,6 @@ var _ = Describe("Stream", func() {
 			err := str.AddStreamFrame(&frame1)
 			Expect(err).ToNot(HaveOccurred())
 			err = str.AddStreamFrame(&frame2)
-			mockFC.EXPECT().GetHighestReceived().Return(protocol.ByteCount(4)).AnyTimes()
 			Expect(err).ToNot(HaveOccurred())
 			b := make([]byte, 4)
 			n, err := strWithTimeout.Read(b)
@@ -164,9 +160,8 @@ var _ = Describe("Stream", func() {
 		})
 
 		It("waits until data is available", func() {
-			mockFC.EXPECT().UpdateHighestReceived(protocol.ByteCount(2), false)
-			mockFC.EXPECT().GetHighestReceived().Return(protocol.ByteCount(4)).AnyTimes()
-			mockFC.EXPECT().AddBytesRead(protocol.ByteCount(2))
+			mockFcm.EXPECT().UpdateHighestReceived(streamID, protocol.ByteCount(2))
+			mockFcm.EXPECT().AddBytesRead(streamID, protocol.ByteCount(2))
 			go func() {
 				defer GinkgoRecover()
 				frame := wire.StreamFrame{Data: []byte{0xDE, 0xAD}}
@@ -181,9 +176,9 @@ var _ = Describe("Stream", func() {
 		})
 
 		It("handles StreamFrames in wrong order", func() {
-			mockFC.EXPECT().UpdateHighestReceived(protocol.ByteCount(2), false)
-			mockFC.EXPECT().UpdateHighestReceived(protocol.ByteCount(4), false)
-			mockFC.EXPECT().AddBytesRead(protocol.ByteCount(2)).Times(2)
+			mockFcm.EXPECT().UpdateHighestReceived(streamID, protocol.ByteCount(2))
+			mockFcm.EXPECT().UpdateHighestReceived(streamID, protocol.ByteCount(4))
+			mockFcm.EXPECT().AddBytesRead(streamID, protocol.ByteCount(2)).Times(2)
 			frame1 := wire.StreamFrame{
 				Offset: 2,
 				Data:   []byte{0xBE, 0xEF},
@@ -196,7 +191,6 @@ var _ = Describe("Stream", func() {
 			Expect(err).ToNot(HaveOccurred())
 			err = str.AddStreamFrame(&frame2)
 			Expect(err).ToNot(HaveOccurred())
-			mockFC.EXPECT().GetHighestReceived().Return(protocol.ByteCount(4)).AnyTimes()
 			b := make([]byte, 4)
 			n, err := strWithTimeout.Read(b)
 			Expect(err).ToNot(HaveOccurred())
@@ -205,10 +199,10 @@ var _ = Describe("Stream", func() {
 		})
 
 		It("ignores duplicate StreamFrames", func() {
-			mockFC.EXPECT().UpdateHighestReceived(protocol.ByteCount(2), false)
-			mockFC.EXPECT().UpdateHighestReceived(protocol.ByteCount(2), false)
-			mockFC.EXPECT().UpdateHighestReceived(protocol.ByteCount(4), false)
-			mockFC.EXPECT().AddBytesRead(protocol.ByteCount(2)).Times(2)
+			mockFcm.EXPECT().UpdateHighestReceived(streamID, protocol.ByteCount(2))
+			mockFcm.EXPECT().UpdateHighestReceived(streamID, protocol.ByteCount(2))
+			mockFcm.EXPECT().UpdateHighestReceived(streamID, protocol.ByteCount(4))
+			mockFcm.EXPECT().AddBytesRead(streamID, protocol.ByteCount(2)).Times(2)
 			frame1 := wire.StreamFrame{
 				Offset: 0,
 				Data:   []byte{0xDE, 0xAD},
@@ -227,7 +221,6 @@ var _ = Describe("Stream", func() {
 			Expect(err).ToNot(HaveOccurred())
 			err = str.AddStreamFrame(&frame3)
 			Expect(err).ToNot(HaveOccurred())
-			mockFC.EXPECT().GetHighestReceived().Return(protocol.ByteCount(4)).AnyTimes()
 			b := make([]byte, 4)
 			n, err := strWithTimeout.Read(b)
 			Expect(err).ToNot(HaveOccurred())
@@ -236,10 +229,10 @@ var _ = Describe("Stream", func() {
 		})
 
 		It("doesn't rejects a StreamFrames with an overlapping data range", func() {
-			mockFC.EXPECT().UpdateHighestReceived(protocol.ByteCount(4), false)
-			mockFC.EXPECT().UpdateHighestReceived(protocol.ByteCount(6), false)
-			mockFC.EXPECT().AddBytesRead(protocol.ByteCount(2))
-			mockFC.EXPECT().AddBytesRead(protocol.ByteCount(4))
+			mockFcm.EXPECT().UpdateHighestReceived(streamID, protocol.ByteCount(4))
+			mockFcm.EXPECT().UpdateHighestReceived(streamID, protocol.ByteCount(6))
+			mockFcm.EXPECT().AddBytesRead(streamID, protocol.ByteCount(2))
+			mockFcm.EXPECT().AddBytesRead(streamID, protocol.ByteCount(4))
 			frame1 := wire.StreamFrame{
 				Offset: 0,
 				Data:   []byte("foob"),
@@ -251,7 +244,6 @@ var _ = Describe("Stream", func() {
 			err := str.AddStreamFrame(&frame1)
 			Expect(err).ToNot(HaveOccurred())
 			err = str.AddStreamFrame(&frame2)
-			mockFC.EXPECT().GetHighestReceived().Return(protocol.ByteCount(4)).AnyTimes()
 			Expect(err).ToNot(HaveOccurred())
 			b := make([]byte, 6)
 			n, err := strWithTimeout.Read(b)
@@ -261,14 +253,13 @@ var _ = Describe("Stream", func() {
 		})
 
 		It("calls onData", func() {
-			mockFC.EXPECT().UpdateHighestReceived(protocol.ByteCount(4), false)
-			mockFC.EXPECT().AddBytesRead(protocol.ByteCount(4))
+			mockFcm.EXPECT().UpdateHighestReceived(streamID, protocol.ByteCount(4))
+			mockFcm.EXPECT().AddBytesRead(streamID, protocol.ByteCount(4))
 			frame := wire.StreamFrame{
 				Offset: 0,
 				Data:   []byte{0xDE, 0xAD, 0xBE, 0xEF},
 			}
 			str.AddStreamFrame(&frame)
-			mockFC.EXPECT().GetHighestReceived().Return(protocol.ByteCount(4)).AnyTimes()
 			b := make([]byte, 4)
 			_, err := strWithTimeout.Read(b)
 			Expect(err).ToNot(HaveOccurred())
@@ -282,10 +273,9 @@ var _ = Describe("Stream", func() {
 			})
 
 			It("returns an error when Read is called after the deadline", func() {
-				mockFC.EXPECT().UpdateHighestReceived(protocol.ByteCount(6), false).AnyTimes()
+				mockFcm.EXPECT().UpdateHighestReceived(streamID, protocol.ByteCount(6)).AnyTimes()
 				f := &wire.StreamFrame{Data: []byte("foobar")}
 				err := str.AddStreamFrame(f)
-				mockFC.EXPECT().GetHighestReceived().Return(protocol.ByteCount(6)).AnyTimes()
 				Expect(err).ToNot(HaveOccurred())
 				str.SetReadDeadline(time.Now().Add(-time.Second))
 				b := make([]byte, 6)
@@ -298,7 +288,6 @@ var _ = Describe("Stream", func() {
 				deadline := time.Now().Add(scaleDuration(50 * time.Millisecond))
 				str.SetReadDeadline(deadline)
 				b := make([]byte, 6)
-				mockFC.EXPECT().GetHighestReceived().Return(protocol.ByteCount(0)).AnyTimes()
 				n, err := strWithTimeout.Read(b)
 				Expect(err).To(MatchError(errDeadline))
 				Expect(n).To(BeZero())
@@ -318,7 +307,6 @@ var _ = Describe("Stream", func() {
 				}()
 				runtime.Gosched()
 				b := make([]byte, 10)
-				mockFC.EXPECT().GetHighestReceived().Return(protocol.ByteCount(0)).AnyTimes()
 				n, err := strWithTimeout.Read(b)
 				Expect(err).To(MatchError(errDeadline))
 				Expect(n).To(BeZero())
@@ -338,15 +326,13 @@ var _ = Describe("Stream", func() {
 				str.SetReadDeadline(deadline1)
 				runtime.Gosched()
 				b := make([]byte, 10)
-				mockFC.EXPECT().GetHighestReceived().Return(protocol.ByteCount(0)).AnyTimes()
 				_, err := strWithTimeout.Read(b)
 				Expect(err).To(MatchError(errDeadline))
 				Expect(time.Now()).To(BeTemporally("~", deadline2, scaleDuration(25*time.Millisecond)))
 			})
 
 			It("sets a read deadline, when SetDeadline is called", func() {
-				mockFC.EXPECT().UpdateHighestReceived(protocol.ByteCount(6), false).AnyTimes()
-				mockFC.EXPECT().GetHighestReceived().Return(protocol.ByteCount(6)).AnyTimes()
+				mockFcm.EXPECT().UpdateHighestReceived(streamID, protocol.ByteCount(6)).AnyTimes()
 				f := &wire.StreamFrame{Data: []byte("foobar")}
 				err := str.AddStreamFrame(f)
 				Expect(err).ToNot(HaveOccurred())
@@ -361,9 +347,8 @@ var _ = Describe("Stream", func() {
 		Context("closing", func() {
 			Context("with FIN bit", func() {
 				It("returns EOFs", func() {
-					mockFC.EXPECT().UpdateHighestReceived(protocol.ByteCount(4), true)
-					mockFC.EXPECT().AddBytesRead(protocol.ByteCount(4))
-					mockFC.EXPECT().GetHighestReceived().Return(protocol.ByteCount(4)).AnyTimes()
+					mockFcm.EXPECT().UpdateHighestReceived(streamID, protocol.ByteCount(4))
+					mockFcm.EXPECT().AddBytesRead(streamID, protocol.ByteCount(4))
 					frame := wire.StreamFrame{
 						Offset: 0,
 						Data:   []byte{0xDE, 0xAD, 0xBE, 0xEF},
@@ -381,9 +366,9 @@ var _ = Describe("Stream", func() {
 				})
 
 				It("handles out-of-order frames", func() {
-					mockFC.EXPECT().UpdateHighestReceived(protocol.ByteCount(2), false)
-					mockFC.EXPECT().UpdateHighestReceived(protocol.ByteCount(4), true)
-					mockFC.EXPECT().AddBytesRead(protocol.ByteCount(2)).Times(2)
+					mockFcm.EXPECT().UpdateHighestReceived(streamID, protocol.ByteCount(2))
+					mockFcm.EXPECT().UpdateHighestReceived(streamID, protocol.ByteCount(4))
+					mockFcm.EXPECT().AddBytesRead(streamID, protocol.ByteCount(2)).Times(2)
 					frame1 := wire.StreamFrame{
 						Offset: 2,
 						Data:   []byte{0xBE, 0xEF},
@@ -397,7 +382,6 @@ var _ = Describe("Stream", func() {
 					Expect(err).ToNot(HaveOccurred())
 					err = str.AddStreamFrame(&frame2)
 					Expect(err).ToNot(HaveOccurred())
-					mockFC.EXPECT().GetHighestReceived().Return(protocol.ByteCount(4)).AnyTimes()
 					b := make([]byte, 4)
 					n, err := strWithTimeout.Read(b)
 					Expect(err).To(MatchError(io.EOF))
@@ -409,15 +393,14 @@ var _ = Describe("Stream", func() {
 				})
 
 				It("returns EOFs with partial read", func() {
-					mockFC.EXPECT().UpdateHighestReceived(protocol.ByteCount(2), true)
-					mockFC.EXPECT().AddBytesRead(protocol.ByteCount(2))
+					mockFcm.EXPECT().UpdateHighestReceived(streamID, protocol.ByteCount(2))
+					mockFcm.EXPECT().AddBytesRead(streamID, protocol.ByteCount(2))
 					frame := wire.StreamFrame{
 						Offset: 0,
 						Data:   []byte{0xDE, 0xAD},
 						FinBit: true,
 					}
 					err := str.AddStreamFrame(&frame)
-					mockFC.EXPECT().GetHighestReceived().Return(protocol.ByteCount(2)).AnyTimes()
 					Expect(err).ToNot(HaveOccurred())
 					b := make([]byte, 4)
 					n, err := strWithTimeout.Read(b)
@@ -427,15 +410,14 @@ var _ = Describe("Stream", func() {
 				})
 
 				It("handles immediate FINs", func() {
-					mockFC.EXPECT().UpdateHighestReceived(protocol.ByteCount(0), true)
-					mockFC.EXPECT().AddBytesRead(protocol.ByteCount(0))
+					mockFcm.EXPECT().UpdateHighestReceived(streamID, protocol.ByteCount(0))
+					mockFcm.EXPECT().AddBytesRead(streamID, protocol.ByteCount(0))
 					frame := wire.StreamFrame{
 						Offset: 0,
 						Data:   []byte{},
 						FinBit: true,
 					}
 					err := str.AddStreamFrame(&frame)
-					mockFC.EXPECT().GetHighestReceived().Return(protocol.ByteCount(0)).AnyTimes()
 					Expect(err).ToNot(HaveOccurred())
 					b := make([]byte, 4)
 					n, err := strWithTimeout.Read(b)
@@ -446,19 +428,17 @@ var _ = Describe("Stream", func() {
 
 			Context("when CloseRemote is called", func() {
 				It("closes", func() {
-					mockFC.EXPECT().UpdateHighestReceived(protocol.ByteCount(0), true)
-					mockFC.EXPECT().AddBytesRead(protocol.ByteCount(0))
+					mockFcm.EXPECT().UpdateHighestReceived(streamID, protocol.ByteCount(0))
+					mockFcm.EXPECT().AddBytesRead(streamID, protocol.ByteCount(0))
 					str.CloseRemote(0)
 					b := make([]byte, 8)
-					mockFC.EXPECT().GetHighestReceived().Return(protocol.ByteCount(0)).AnyTimes()
 					n, err := strWithTimeout.Read(b)
 					Expect(n).To(BeZero())
 					Expect(err).To(MatchError(io.EOF))
 				})
 
 				It("doesn't cancel the context", func() {
-					mockFC.EXPECT().UpdateHighestReceived(protocol.ByteCount(0), true)
-					mockFC.EXPECT().GetHighestReceived().Return(protocol.ByteCount(0)).AnyTimes()
+					mockFcm.EXPECT().UpdateHighestReceived(streamID, protocol.ByteCount(0))
 					str.CloseRemote(0)
 					Expect(str.Context().Done()).ToNot(BeClosed())
 				})
@@ -473,7 +453,6 @@ var _ = Describe("Stream", func() {
 				b := make([]byte, 4)
 				go func() {
 					defer GinkgoRecover()
-					mockFC.EXPECT().GetHighestReceived().Return(protocol.ByteCount(0)).AnyTimes()
 					n, err := strWithTimeout.Read(b)
 					Expect(n).To(BeZero())
 					Expect(err).To(MatchError(testErr))
@@ -487,7 +466,6 @@ var _ = Describe("Stream", func() {
 			It("errors for all following reads", func() {
 				str.Cancel(testErr)
 				b := make([]byte, 1)
-				mockFC.EXPECT().GetHighestReceived().Return(protocol.ByteCount(0)).AnyTimes()
 				n, err := strWithTimeout.Read(b)
 				Expect(n).To(BeZero())
 				Expect(err).To(MatchError(testErr))
@@ -506,32 +484,28 @@ var _ = Describe("Stream", func() {
 
 		Context("reset by the peer", func() {
 			It("continues reading after receiving a remote error", func() {
-				mockFC.EXPECT().UpdateHighestReceived(protocol.ByteCount(4), false)
-				mockFC.EXPECT().UpdateHighestReceived(protocol.ByteCount(10), true)
+				mockFcm.EXPECT().UpdateHighestReceived(streamID, protocol.ByteCount(4))
 				frame := wire.StreamFrame{
 					Offset: 0,
 					Data:   []byte{0xDE, 0xAD, 0xBE, 0xEF},
 				}
 				str.AddStreamFrame(&frame)
-				str.RegisterRemoteError(testErr, 10)
+				str.RegisterRemoteError(testErr)
 				b := make([]byte, 4)
-				mockFC.EXPECT().GetHighestReceived().Return(protocol.ByteCount(4)).AnyTimes()
 				n, err := strWithTimeout.Read(b)
 				Expect(err).ToNot(HaveOccurred())
 				Expect(n).To(Equal(4))
 			})
 
 			It("reads a delayed StreamFrame that arrives after receiving a remote error", func() {
-				mockFC.EXPECT().UpdateHighestReceived(protocol.ByteCount(4), true)
-				mockFC.EXPECT().UpdateHighestReceived(protocol.ByteCount(4), false)
-				str.RegisterRemoteError(testErr, 4)
+				mockFcm.EXPECT().UpdateHighestReceived(streamID, protocol.ByteCount(4))
+				str.RegisterRemoteError(testErr)
 				frame := wire.StreamFrame{
 					Offset: 0,
 					Data:   []byte{0xDE, 0xAD, 0xBE, 0xEF},
 				}
 				err := str.AddStreamFrame(&frame)
 				Expect(err).ToNot(HaveOccurred())
-				mockFC.EXPECT().GetHighestReceived().Return(protocol.ByteCount(4)).AnyTimes()
 				b := make([]byte, 4)
 				n, err := strWithTimeout.Read(b)
 				Expect(err).ToNot(HaveOccurred())
@@ -539,16 +513,14 @@ var _ = Describe("Stream", func() {
 			})
 
 			It("returns the error if reading past the offset of the frame received", func() {
-				mockFC.EXPECT().UpdateHighestReceived(protocol.ByteCount(4), false)
-				mockFC.EXPECT().UpdateHighestReceived(protocol.ByteCount(8), true)
+				mockFcm.EXPECT().UpdateHighestReceived(streamID, protocol.ByteCount(4))
 				frame := wire.StreamFrame{
 					Offset: 0,
 					Data:   []byte{0xDE, 0xAD, 0xBE, 0xEF},
 				}
 				str.AddStreamFrame(&frame)
-				str.RegisterRemoteError(testErr, 8)
+				str.RegisterRemoteError(testErr)
 				b := make([]byte, 10)
-				mockFC.EXPECT().GetHighestReceived().Return(protocol.ByteCount(4)).AnyTimes()
 				n, err := strWithTimeout.Read(b)
 				Expect(b[0:4]).To(Equal(frame.Data))
 				Expect(err).To(MatchError(testErr))
@@ -556,17 +528,15 @@ var _ = Describe("Stream", func() {
 			})
 
 			It("returns an EOF when reading past the offset, if the stream received a finbit", func() {
-				mockFC.EXPECT().UpdateHighestReceived(protocol.ByteCount(4), true)
-				mockFC.EXPECT().UpdateHighestReceived(protocol.ByteCount(8), true)
+				mockFcm.EXPECT().UpdateHighestReceived(streamID, protocol.ByteCount(4))
 				frame := wire.StreamFrame{
 					Offset: 0,
 					Data:   []byte{0xDE, 0xAD, 0xBE, 0xEF},
 					FinBit: true,
 				}
 				str.AddStreamFrame(&frame)
-				str.RegisterRemoteError(testErr, 8)
+				str.RegisterRemoteError(testErr)
 				b := make([]byte, 10)
-				mockFC.EXPECT().GetHighestReceived().Return(protocol.ByteCount(4)).AnyTimes()
 				n, err := strWithTimeout.Read(b)
 				Expect(b[:4]).To(Equal(frame.Data))
 				Expect(err).To(MatchError(io.EOF))
@@ -574,16 +544,14 @@ var _ = Describe("Stream", func() {
 			})
 
 			It("continues reading in small chunks after receiving a remote error", func() {
-				mockFC.EXPECT().UpdateHighestReceived(protocol.ByteCount(4), true)
-				mockFC.EXPECT().UpdateHighestReceived(protocol.ByteCount(4), true)
+				mockFcm.EXPECT().UpdateHighestReceived(streamID, protocol.ByteCount(4))
 				frame := wire.StreamFrame{
 					Offset: 0,
 					Data:   []byte{0xDE, 0xAD, 0xBE, 0xEF},
 					FinBit: true,
 				}
 				str.AddStreamFrame(&frame)
-				str.RegisterRemoteError(testErr, 4)
-				mockFC.EXPECT().GetHighestReceived().Return(protocol.ByteCount(4)).AnyTimes()
+				str.RegisterRemoteError(testErr)
 				b := make([]byte, 3)
 				_, err := strWithTimeout.Read(b)
 				Expect(err).ToNot(HaveOccurred())
@@ -596,8 +564,7 @@ var _ = Describe("Stream", func() {
 			})
 
 			It("doesn't inform the flow controller about bytes read after receiving the remote error", func() {
-				mockFC.EXPECT().UpdateHighestReceived(protocol.ByteCount(4), false)
-				mockFC.EXPECT().UpdateHighestReceived(protocol.ByteCount(10), true)
+				mockFcm.EXPECT().UpdateHighestReceived(streamID, protocol.ByteCount(4))
 				// No AddBytesRead()
 				frame := wire.StreamFrame{
 					Offset:   0,
@@ -605,15 +572,13 @@ var _ = Describe("Stream", func() {
 					Data:     []byte{0xDE, 0xAD, 0xBE, 0xEF},
 				}
 				str.AddStreamFrame(&frame)
-				str.RegisterRemoteError(testErr, 10)
+				str.RegisterRemoteError(testErr)
 				b := make([]byte, 3)
-				mockFC.EXPECT().GetHighestReceived().Return(protocol.ByteCount(10)).AnyTimes()
 				_, err := strWithTimeout.Read(b)
 				Expect(err).ToNot(HaveOccurred())
 			})
 
 			It("stops writing after receiving a remote error", func() {
-				mockFC.EXPECT().UpdateHighestReceived(protocol.ByteCount(10), true)
 				done := make(chan struct{})
 				go func() {
 					defer GinkgoRecover()
@@ -622,15 +587,12 @@ var _ = Describe("Stream", func() {
 					Expect(err).To(MatchError(testErr))
 					close(done)
 				}()
-				str.RegisterRemoteError(testErr, 10)
-				mockFC.EXPECT().GetHighestReceived().Return(protocol.ByteCount(10)).AnyTimes()
+				str.RegisterRemoteError(testErr)
 				Eventually(done).Should(BeClosed())
+
 			})
 
 			It("returns how much was written when recieving a remote error", func() {
-				mockFC.EXPECT().UpdateHighestReceived(protocol.ByteCount(10), true)
-				mockFC.EXPECT().SendWindowSize().Return(protocol.ByteCount(9999))
-				mockFC.EXPECT().AddBytesSent(protocol.ByteCount(4))
 				done := make(chan struct{})
 				go func() {
 					defer GinkgoRecover()
@@ -640,22 +602,19 @@ var _ = Describe("Stream", func() {
 					close(done)
 				}()
 
-				Eventually(func() []byte { return str.GetDataForWriting(4) }).ShouldNot(BeEmpty())
-				str.RegisterRemoteError(testErr, 10)
-				mockFC.EXPECT().GetHighestReceived().Return(protocol.ByteCount(10)).AnyTimes()
+				Eventually(func() []byte { return str.getDataForWriting(4) }).ShouldNot(BeEmpty())
+				str.RegisterRemoteError(testErr)
 				Eventually(done).Should(BeClosed())
 			})
 
 			It("calls onReset when receiving a remote error", func() {
-				mockFC.EXPECT().UpdateHighestReceived(protocol.ByteCount(0), true)
-				mockFC.EXPECT().GetHighestReceived().Return(protocol.ByteCount(0)).AnyTimes()
 				done := make(chan struct{})
 				str.writeOffset = 0x1000
 				go func() {
 					_, _ = strWithTimeout.Write([]byte("foobar"))
 					close(done)
 				}()
-				str.RegisterRemoteError(testErr, 0)
+				str.RegisterRemoteError(testErr)
 				Expect(resetCalled).To(BeTrue())
 				Expect(resetCalledForStream).To(Equal(protocol.StreamID(1337)))
 				Expect(resetCalledAtOffset).To(Equal(protocol.ByteCount(0x1000)))
@@ -663,31 +622,25 @@ var _ = Describe("Stream", func() {
 			})
 
 			It("doesn't call onReset if it already sent a FIN", func() {
-				mockFC.EXPECT().UpdateHighestReceived(protocol.ByteCount(0), true)
-				mockFC.EXPECT().GetHighestReceived().Return(protocol.ByteCount(0)).AnyTimes()
 				str.Close()
-				str.SentFin()
-				str.RegisterRemoteError(testErr, 0)
+				str.sentFin()
+				str.RegisterRemoteError(testErr)
 				Expect(resetCalled).To(BeFalse())
 			})
 
 			It("doesn't call onReset if the stream was reset locally before", func() {
-				mockFC.EXPECT().UpdateHighestReceived(protocol.ByteCount(0), true)
-				mockFC.EXPECT().GetHighestReceived().Return(protocol.ByteCount(0)).AnyTimes()
 				str.Reset(testErr)
 				Expect(resetCalled).To(BeTrue())
 				resetCalled = false
-				str.RegisterRemoteError(testErr, 0)
+				str.RegisterRemoteError(testErr)
 				Expect(resetCalled).To(BeFalse())
 			})
 
 			It("doesn't call onReset twice, when it gets two remote errors", func() {
-				mockFC.EXPECT().UpdateHighestReceived(protocol.ByteCount(0), true)
-				mockFC.EXPECT().GetHighestReceived().Return(protocol.ByteCount(0)).AnyTimes()
-				str.RegisterRemoteError(testErr, 0)
+				str.RegisterRemoteError(testErr)
 				Expect(resetCalled).To(BeTrue())
 				resetCalled = false
-				str.RegisterRemoteError(testErr, 0)
+				str.RegisterRemoteError(testErr)
 				Expect(resetCalled).To(BeFalse())
 			})
 		})
@@ -704,7 +657,7 @@ var _ = Describe("Stream", func() {
 				}()
 				Consistently(done).ShouldNot(BeClosed())
 				str.Reset(testErr)
-				Expect(str.GetDataForWriting(6)).To(BeNil())
+				Expect(str.getDataForWriting(6)).To(BeNil())
 				Eventually(done).Should(BeClosed())
 			})
 
@@ -713,14 +666,13 @@ var _ = Describe("Stream", func() {
 				n, err := strWithTimeout.Write([]byte("foobar"))
 				Expect(n).To(BeZero())
 				Expect(err).To(MatchError(testErr))
-				Expect(str.GetDataForWriting(6)).To(BeNil())
+				Expect(str.getDataForWriting(6)).To(BeNil())
 			})
 
 			It("stops reading", func() {
 				done := make(chan struct{})
 				go func() {
 					defer GinkgoRecover()
-					mockFC.EXPECT().GetHighestReceived().Return(protocol.ByteCount(0)).AnyTimes()
 					b := make([]byte, 4)
 					n, err := strWithTimeout.Read(b)
 					Expect(n).To(BeZero())
@@ -733,13 +685,12 @@ var _ = Describe("Stream", func() {
 			})
 
 			It("doesn't allow further reads", func() {
-				mockFC.EXPECT().UpdateHighestReceived(protocol.ByteCount(6), false)
+				mockFcm.EXPECT().UpdateHighestReceived(streamID, protocol.ByteCount(6))
 				str.AddStreamFrame(&wire.StreamFrame{
 					Data: []byte("foobar"),
 				})
 				str.Reset(testErr)
 				b := make([]byte, 6)
-				mockFC.EXPECT().GetHighestReceived().Return(protocol.ByteCount(6)).AnyTimes()
 				n, err := strWithTimeout.Read(b)
 				Expect(n).To(BeZero())
 				Expect(err).To(MatchError(testErr))
@@ -755,15 +706,13 @@ var _ = Describe("Stream", func() {
 
 			It("doesn't call onReset if it already sent a FIN", func() {
 				str.Close()
-				str.SentFin()
+				str.sentFin()
 				str.Reset(testErr)
 				Expect(resetCalled).To(BeFalse())
 			})
 
 			It("doesn't call onReset if the stream was reset remotely before", func() {
-				mockFC.EXPECT().UpdateHighestReceived(protocol.ByteCount(0), true)
-				mockFC.EXPECT().GetHighestReceived().Return(protocol.ByteCount(0)).AnyTimes()
-				str.RegisterRemoteError(testErr, 0)
+				str.RegisterRemoteError(testErr)
 				Expect(resetCalled).To(BeTrue())
 				resetCalled = false
 				str.Reset(testErr)
@@ -788,8 +737,6 @@ var _ = Describe("Stream", func() {
 
 	Context("writing", func() {
 		It("writes and gets all data at once", func() {
-			mockFC.EXPECT().SendWindowSize().Return(protocol.ByteCount(9999))
-			mockFC.EXPECT().AddBytesSent(protocol.ByteCount(6))
 			done := make(chan struct{})
 			go func() {
 				defer GinkgoRecover()
@@ -805,8 +752,8 @@ var _ = Describe("Stream", func() {
 			}).Should(Equal([]byte("foobar")))
 			Consistently(done).ShouldNot(BeClosed())
 			Expect(onDataCalled).To(BeTrue())
-			Expect(str.LenOfDataForWriting()).To(Equal(protocol.ByteCount(6)))
-			data := str.GetDataForWriting(1000)
+			Expect(str.lenOfDataForWriting()).To(Equal(protocol.ByteCount(6)))
+			data := str.getDataForWriting(1000)
 			Expect(data).To(Equal([]byte("foobar")))
 			Expect(str.writeOffset).To(Equal(protocol.ByteCount(6)))
 			Expect(str.dataForWriting).To(BeNil())
@@ -814,8 +761,6 @@ var _ = Describe("Stream", func() {
 		})
 
 		It("writes and gets data in two turns", func() {
-			mockFC.EXPECT().SendWindowSize().Return(protocol.ByteCount(9999)).Times(2)
-			mockFC.EXPECT().AddBytesSent(protocol.ByteCount(3)).Times(2)
 			done := make(chan struct{})
 			go func() {
 				defer GinkgoRecover()
@@ -830,27 +775,25 @@ var _ = Describe("Stream", func() {
 				return str.dataForWriting
 			}).Should(Equal([]byte("foobar")))
 			Consistently(done).ShouldNot(BeClosed())
-			Expect(str.LenOfDataForWriting()).To(Equal(protocol.ByteCount(6)))
-			data := str.GetDataForWriting(3)
+			Expect(str.lenOfDataForWriting()).To(Equal(protocol.ByteCount(6)))
+			data := str.getDataForWriting(3)
 			Expect(data).To(Equal([]byte("foo")))
 			Expect(str.writeOffset).To(Equal(protocol.ByteCount(3)))
 			Expect(str.dataForWriting).ToNot(BeNil())
-			Expect(str.LenOfDataForWriting()).To(Equal(protocol.ByteCount(3)))
-			data = str.GetDataForWriting(3)
+			Expect(str.lenOfDataForWriting()).To(Equal(protocol.ByteCount(3)))
+			data = str.getDataForWriting(3)
 			Expect(data).To(Equal([]byte("bar")))
 			Expect(str.writeOffset).To(Equal(protocol.ByteCount(6)))
 			Expect(str.dataForWriting).To(BeNil())
-			Expect(str.LenOfDataForWriting()).To(Equal(protocol.ByteCount(0)))
+			Expect(str.lenOfDataForWriting()).To(Equal(protocol.ByteCount(0)))
 			Eventually(done).Should(BeClosed())
 		})
 
 		It("getDataForWriting returns nil if no data is available", func() {
-			Expect(str.GetDataForWriting(1000)).To(BeNil())
+			Expect(str.getDataForWriting(1000)).To(BeNil())
 		})
 
 		It("copies the slice while writing", func() {
-			mockFC.EXPECT().SendWindowSize().Return(protocol.ByteCount(9999))
-			mockFC.EXPECT().AddBytesSent(protocol.ByteCount(3))
 			s := []byte("foo")
 			go func() {
 				defer GinkgoRecover()
@@ -858,9 +801,9 @@ var _ = Describe("Stream", func() {
 				Expect(err).ToNot(HaveOccurred())
 				Expect(n).To(Equal(3))
 			}()
-			Eventually(func() protocol.ByteCount { return str.LenOfDataForWriting() }).ShouldNot(BeZero())
+			Eventually(func() protocol.ByteCount { return str.lenOfDataForWriting() }).ShouldNot(BeZero())
 			s[0] = 'v'
-			Expect(str.GetDataForWriting(3)).To(Equal([]byte("foo")))
+			Expect(str.getDataForWriting(3)).To(Equal([]byte("foo")))
 		})
 
 		It("returns when given a nil input", func() {
@@ -949,29 +892,29 @@ var _ = Describe("Stream", func() {
 
 			It("allows FIN", func() {
 				str.Close()
-				Expect(str.ShouldSendFin()).To(BeTrue())
+				Expect(str.shouldSendFin()).To(BeTrue())
 			})
 
 			It("does not allow FIN when there's still data", func() {
 				str.dataForWriting = []byte("foobar")
 				str.Close()
-				Expect(str.ShouldSendFin()).To(BeFalse())
+				Expect(str.shouldSendFin()).To(BeFalse())
 			})
 
 			It("does not allow FIN when the stream is not closed", func() {
-				Expect(str.ShouldSendFin()).To(BeFalse())
+				Expect(str.shouldSendFin()).To(BeFalse())
 			})
 
 			It("does not allow FIN after an error", func() {
 				str.Cancel(errors.New("test"))
-				Expect(str.ShouldSendFin()).To(BeFalse())
+				Expect(str.shouldSendFin()).To(BeFalse())
 			})
 
 			It("does not allow FIN twice", func() {
 				str.Close()
-				Expect(str.ShouldSendFin()).To(BeTrue())
-				str.SentFin()
-				Expect(str.ShouldSendFin()).To(BeFalse())
+				Expect(str.shouldSendFin()).To(BeTrue())
+				str.sentFin()
+				Expect(str.shouldSendFin()).To(BeFalse())
 			})
 		})
 
@@ -992,24 +935,23 @@ var _ = Describe("Stream", func() {
 					Expect(err).To(MatchError(testErr))
 				}()
 				Eventually(func() []byte { return str.dataForWriting }).ShouldNot(BeNil())
-				Expect(str.LenOfDataForWriting()).ToNot(BeZero())
+				Expect(str.lenOfDataForWriting()).ToNot(BeZero())
 				str.Cancel(testErr)
-				data := str.GetDataForWriting(6)
+				data := str.getDataForWriting(6)
 				Expect(data).To(BeNil())
-				Expect(str.LenOfDataForWriting()).To(BeZero())
+				Expect(str.lenOfDataForWriting()).To(BeZero())
 			})
 		})
 	})
 
 	It("errors when a StreamFrames causes a flow control violation", func() {
 		testErr := errors.New("flow control violation")
-		mockFC.EXPECT().UpdateHighestReceived(protocol.ByteCount(8), false).Return(testErr)
+		mockFcm.EXPECT().UpdateHighestReceived(streamID, protocol.ByteCount(8)).Return(testErr)
 		frame := wire.StreamFrame{
 			Offset: 2,
 			Data:   []byte("foobar"),
 		}
 		err := str.AddStreamFrame(&frame)
-		mockFC.EXPECT().GetHighestReceived().Return(protocol.ByteCount(8)).AnyTimes()
 		Expect(err).To(MatchError(testErr))
 	})
 
@@ -1017,8 +959,6 @@ var _ = Describe("Stream", func() {
 		testErr := errors.New("testErr")
 
 		finishReading := func() {
-			mockFC.EXPECT().UpdateHighestReceived(protocol.ByteCount(0), true)
-			mockFC.EXPECT().GetHighestReceived().Return(protocol.ByteCount(0)).AnyTimes()
 			err := str.AddStreamFrame(&wire.StreamFrame{FinBit: true})
 			Expect(err).ToNot(HaveOccurred())
 			b := make([]byte, 100)
@@ -1028,108 +968,84 @@ var _ = Describe("Stream", func() {
 
 		It("is finished after it is canceled", func() {
 			str.Cancel(testErr)
-			Expect(str.Finished()).To(BeTrue())
+			Expect(str.finished()).To(BeTrue())
 		})
 
 		It("is not finished if it is only closed for writing", func() {
 			str.Close()
-			str.SentFin()
-			Expect(str.Finished()).To(BeFalse())
+			str.sentFin()
+			Expect(str.finished()).To(BeFalse())
 		})
 
 		It("cancels the context after it is closed", func() {
 			Expect(str.Context().Done()).ToNot(BeClosed())
 			str.Close()
-			str.SentFin()
+			str.sentFin()
 			Expect(str.Context().Done()).To(BeClosed())
 		})
 
 		It("is not finished if it is only closed for reading", func() {
-			mockFC.EXPECT().AddBytesRead(protocol.ByteCount(0))
+			mockFcm.EXPECT().UpdateHighestReceived(streamID, protocol.ByteCount(0))
+			mockFcm.EXPECT().AddBytesRead(streamID, protocol.ByteCount(0))
 			finishReading()
-			Expect(str.Finished()).To(BeFalse())
+			Expect(str.finished()).To(BeFalse())
 		})
 
 		It("is finished after receiving a RST and sending one", func() {
-			mockFC.EXPECT().UpdateHighestReceived(protocol.ByteCount(0), true)
-			mockFC.EXPECT().GetHighestReceived().Return(protocol.ByteCount(0)).AnyTimes()
 			// this directly sends a rst
-			str.RegisterRemoteError(testErr, 0)
+			str.RegisterRemoteError(testErr)
 			Expect(str.rstSent.Get()).To(BeTrue())
-			Expect(str.Finished()).To(BeTrue())
+			Expect(str.finished()).To(BeTrue())
 		})
 
 		It("cancels the context after receiving a RST", func() {
-			mockFC.EXPECT().UpdateHighestReceived(protocol.ByteCount(0), true)
-			mockFC.EXPECT().GetHighestReceived().Return(protocol.ByteCount(0)).AnyTimes()
 			Expect(str.Context().Done()).ToNot(BeClosed())
-			str.RegisterRemoteError(testErr, 0)
+			str.RegisterRemoteError(testErr)
 			Expect(str.Context().Done()).To(BeClosed())
 		})
 
 		It("is finished after being locally reset and receiving a RST in response", func() {
-			mockFC.EXPECT().UpdateHighestReceived(protocol.ByteCount(13), true)
-			mockFC.EXPECT().GetHighestReceived().Return(protocol.ByteCount(13)).AnyTimes()
 			str.Reset(testErr)
-			Expect(str.Finished()).To(BeFalse())
-			str.RegisterRemoteError(testErr, 13)
-			Expect(str.Finished()).To(BeTrue())
+			Expect(str.finished()).To(BeFalse())
+			str.RegisterRemoteError(testErr)
+			Expect(str.finished()).To(BeTrue())
 		})
 
 		It("is finished after finishing writing and receiving a RST", func() {
-			mockFC.EXPECT().UpdateHighestReceived(protocol.ByteCount(13), true)
-			mockFC.EXPECT().GetHighestReceived().Return(protocol.ByteCount(13)).AnyTimes()
 			str.Close()
-			str.SentFin()
-			str.RegisterRemoteError(testErr, 13)
-			Expect(str.Finished()).To(BeTrue())
+			str.sentFin()
+			str.RegisterRemoteError(testErr)
+			Expect(str.finished()).To(BeTrue())
 		})
 
 		It("is finished after finishing reading and being locally reset", func() {
-			mockFC.EXPECT().AddBytesRead(protocol.ByteCount(0))
-			mockFC.EXPECT().GetHighestReceived().Return(protocol.ByteCount(0)).AnyTimes()
+			mockFcm.EXPECT().UpdateHighestReceived(streamID, protocol.ByteCount(0))
+			mockFcm.EXPECT().AddBytesRead(streamID, protocol.ByteCount(0))
 			finishReading()
-			Expect(str.Finished()).To(BeFalse())
+			Expect(str.finished()).To(BeFalse())
 			str.Reset(testErr)
-			Expect(str.Finished()).To(BeTrue())
-		})
-	})
-
-	Context("flow control", func() {
-		It("says when it's flow control blocked", func() {
-			mockFC.EXPECT().IsBlocked().Return(false)
-			Expect(str.IsFlowControlBlocked()).To(BeFalse())
-			mockFC.EXPECT().IsBlocked().Return(true)
-			Expect(str.IsFlowControlBlocked()).To(BeTrue())
-		})
-
-		It("updates the flow control window", func() {
-			mockFC.EXPECT().UpdateSendWindow(protocol.ByteCount(0x42))
-			str.UpdateSendWindow(0x42)
-		})
-
-		It("gets a window update", func() {
-			mockFC.EXPECT().GetWindowUpdate(false).Return(protocol.ByteCount(0x100))
-			Expect(str.GetWindowUpdate(false)).To(Equal(protocol.ByteCount(0x100)))
+			Expect(str.finished()).To(BeTrue())
 		})
 	})
 
 	Context("GetBytesSent", func() {
 		It("return the correct number of bytes sent", func() {
-			mockFC.EXPECT().AddBytesSent(protocol.ByteCount(200))
-			mockFC.AddBytesSent(protocol.ByteCount(200))
-			mockFC.EXPECT().GetBytesSent().Return(protocol.ByteCount(200))
-			bytes := str.GetBytesSent()
+			mockFcm.EXPECT().AddBytesSent(streamID, protocol.ByteCount(200))
+			mockFcm.AddBytesSent(streamID, protocol.ByteCount(200))
+			mockFcm.EXPECT().GetBytesSent(streamID).Return(protocol.ByteCount(200), nil)
+			bytes, err := str.GetBytesSent()
+			Expect(err).ToNot(HaveOccurred())
 			Expect(bytes).To(Equal(protocol.ByteCount(200)))
 		})
 	})
 
 	Context("GetBytesRetrans", func() {
 		It("return the correct number of bytes retransmitted", func() {
-			mockFC.EXPECT().AddBytesRetrans(protocol.ByteCount(200))
-			mockFC.AddBytesRetrans(protocol.ByteCount(200))
-			mockFC.EXPECT().GetBytesRetrans().Return(protocol.ByteCount(200))
-			bytes := str.GetBytesRetrans()
+			mockFcm.EXPECT().AddBytesRetrans(streamID, protocol.ByteCount(200))
+			mockFcm.AddBytesRetrans(streamID, protocol.ByteCount(200))
+			mockFcm.EXPECT().GetBytesRetrans(streamID).Return(protocol.ByteCount(200), nil)
+			bytes, err := str.GetBytesRetrans()
+			Expect(err).ToNot(HaveOccurred())
 			Expect(bytes).To(Equal(protocol.ByteCount(200)))
 		})
 	})

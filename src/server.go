@@ -43,7 +43,7 @@ type server struct {
 	sessionQueue chan Session
 	errorChan    chan struct{}
 
-	newSession func(conn connection, pconnMgr pconnManagerI, v protocol.VersionNumber, connectionID protocol.ConnectionID, sCfg *handshake.ServerConfig, tlsConf *tls.Config, config *Config) (packetHandler, <-chan handshakeEvent, error)
+	newSession func(conn connection, pconnMgr *pconnManager, createPaths bool, v protocol.VersionNumber, connectionID protocol.ConnectionID, sCfg *handshake.ServerConfig, tlsConf *tls.Config, config *Config) (packetHandler, <-chan handshakeEvent, error)
 }
 
 var _ Listener = &server{}
@@ -69,7 +69,7 @@ func ListenAddrImpl(addr string, tlsConf *tls.Config, config *Config, pconnMgrAr
 
 	if pconnMgrArg == nil {
 		// Create the pconnManager here. It will be used to start udp connections
-		pconnMgr = &pconnManager{perspective: protocol.PerspectiveServer, config: config}
+		pconnMgr = &pconnManager{perspective: protocol.PerspectiveServer}
 		// XXX (QDC): make this cleaner
 		pconn, err := net.ListenUDP("udp", udpAddr)
 		if err != nil {
@@ -78,14 +78,14 @@ func ListenAddrImpl(addr string, tlsConf *tls.Config, config *Config, pconnMgrAr
 			operr := &net.OpError{Op: "listen", Net: "udp", Source: udpAddr, Addr: udpAddr, Err: err}
 			return nil, operr
 		}
-		err = pconnMgr.setup(pconn, udpAddr, newNetWatcherLinux)
+		err = pconnMgr.setup(pconn, udpAddr)
 		if err != nil {
 			return nil, err
 		}
 	} else {
 		pconnMgr = pconnMgrArg
 	}
-	return ListenImpl(pconnMgr.pconns[0], tlsConf, config, pconnMgr)
+	return ListenImpl(pconnMgr.pconnAny, tlsConf, config, pconnMgr)
 }
 
 // Listen listens for QUIC connections on a given net.PacketConn.
@@ -93,8 +93,8 @@ func ListenAddrImpl(addr string, tlsConf *tls.Config, config *Config, pconnMgrAr
 // The tls.Config must not be nil, the quic.Config may be nil.
 func Listen(pconn net.PacketConn, tlsConf *tls.Config, config *Config) (Listener, error) {
 	// Create the pconnManager here. It will be used to start udp connections
-	pconnMgr := &pconnManager{perspective: protocol.PerspectiveServer, config: config}
-	err := pconnMgr.setup(pconn, nil, newNetWatcherLinux)
+	pconnMgr := &pconnManager{perspective: protocol.PerspectiveServer}
+	err := pconnMgr.setup(pconn, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -119,8 +119,8 @@ func ListenImpl(pconn net.PacketConn, tlsConf *tls.Config, config *Config, pconn
 	var pconnMgr *pconnManager
 
 	if pconnMgrArg == nil {
-		pconnMgr = &pconnManager{perspective: protocol.PerspectiveServer, config: config}
-		err := pconnMgr.setup(pconn, nil, newNetWatcherLinux)
+		pconnMgr = &pconnManager{perspective: protocol.PerspectiveServer}
+		err := pconnMgr.setup(pconn, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -166,7 +166,7 @@ var defaultAcceptCookie = func(clientAddr net.Addr, cookie *Cookie) bool {
 func populateServerConfig(config *Config) *Config {
 	if config == nil {
 		config = &Config{
-			MaxPathID: 0xff, // Grant this ability by default for a server
+			CreatePaths: true, // Grant this ability by default for a server
 		}
 	}
 	versions := config.Versions
@@ -197,18 +197,6 @@ func populateServerConfig(config *Config) *Config {
 		maxReceiveConnectionFlowControlWindow = protocol.DefaultMaxReceiveConnectionFlowControlWindowServer
 	}
 
-	if config.SchedulingSchemeName != "" {
-		config.SchedulingScheme = protocol.ParseSchedulingScheme(config.SchedulingSchemeName)
-	} else if config.SchedulingScheme == 0 {
-		config.SchedulingScheme = protocol.SchedRR
-	}
-
-	if config.CongestionControlName != "" {
-		config.CongestionControl = protocol.ParseCongestionControl(config.CongestionControlName)
-	} else if config.CongestionControl == 0 {
-		config.CongestionControl = protocol.CongestionControlOlia
-	}
-
 	return &Config{
 		Versions:                              versions,
 		HandshakeTimeout:                      handshakeTimeout,
@@ -217,18 +205,7 @@ func populateServerConfig(config *Config) *Config {
 		KeepAlive:                             config.KeepAlive,
 		MaxReceiveStreamFlowControlWindow:     maxReceiveStreamFlowControlWindow,
 		MaxReceiveConnectionFlowControlWindow: maxReceiveConnectionFlowControlWindow,
-		MaxPathID:                             config.MaxPathID,
-		MultipathService:                      config.MultipathService,
-		NotifyID:                              config.NotifyID,
-		FECScheme:                             config.FECScheme,
-		RedundancyController:                  config.RedundancyController,
-		DisableFECRecoveredFrames:             config.DisableFECRecoveredFrames,
-		ProtectReliableStreamFrames:           config.ProtectReliableStreamFrames,
-		UseFastRetransmit:                     config.UseFastRetransmit,
-		OnlySendFECWhenApplicationLimited:     config.OnlySendFECWhenApplicationLimited,
-		SchedulingScheme:                      config.SchedulingScheme,
-		CongestionControl:                     config.CongestionControl,
-		ForceSendFECOnIdlePath:                config.ForceSendFECOnIdlePath,
+		CreatePaths:                           config.CreatePaths,
 	}
 }
 
@@ -263,32 +240,25 @@ func (s *server) Accept() (Session, error) {
 // Close the server
 func (s *server) Close() error {
 	s.sessionsMutex.Lock()
-	var wg sync.WaitGroup
 	for _, session := range s.sessions {
 		if session != nil {
-			wg.Add(1)
-			go func(sess packetHandler) {
-				// session.Close() blocks until the CONNECTION_CLOSE has been sent and the run-loop has stopped
-				_ = sess.Close(nil)
-				wg.Done()
-			}(session)
+			s.sessionsMutex.Unlock()
+			_ = session.Close(nil)
+			s.sessionsMutex.Lock()
 		}
 	}
 	s.sessionsMutex.Unlock()
-	wg.Wait()
 
+	s.pconnMgr.closeConns <- struct{}{}
 	if s.pconnMgr != nil && s.pconnMgr.closed != nil {
-		s.pconnMgr.PconnsLock().Lock()
-		defer s.pconnMgr.PconnsLock().Unlock()
 		select {
 		case <-s.pconnMgr.closed:
-			// Connections are closed, nothing to do
 		default:
-			close(s.pconnMgr.closeConns)
-			<-s.pconnMgr.closed
+			// We never know...
 		}
+		// Wait that connections are closed
+		<-s.pconnMgr.closed
 	}
-
 	return nil
 }
 
@@ -298,11 +268,11 @@ func (s *server) Addr() net.Addr {
 		addr, _ := net.ResolveUDPAddr("udp", "1.2.3.4:5678")
 		return addr
 	}
-	if s.pconnMgr.pconns[0] == nil {
+	if s.pconnMgr.pconnAny == nil {
 		addr, _ := net.ResolveUDPAddr("udp", "5.6.7.8:9101")
 		return addr
 	}
-	return s.pconnMgr.pconns[0].LocalAddr()
+	return s.pconnMgr.pconnAny.LocalAddr()
 }
 
 func (s *server) handlePacket(rcvRawPacket *receivedRawPacket) error {
@@ -312,29 +282,42 @@ func (s *server) handlePacket(rcvRawPacket *receivedRawPacket) error {
 	rcvTime := rcvRawPacket.rcvTime
 
 	r := bytes.NewReader(packet)
-	hdr, err := wire.ParseHeaderSentByClient(r)
+	connID, err := wire.PeekConnectionID(r, protocol.PerspectiveClient)
 	if err != nil {
 		return qerr.Error(qerr.InvalidPacketHeader, err.Error())
 	}
-	hdr.Raw = packet[:len(packet)-r.Len()]
-	connID := hdr.ConnectionID
 
 	s.sessionsMutex.RLock()
-	session, sessionKnown := s.sessions[connID]
+	session, ok := s.sessions[connID]
 	s.sessionsMutex.RUnlock()
 
-	if sessionKnown && session == nil {
+	if ok && session == nil {
 		// Late packet for closed session
 		return nil
 	}
 
+	version := protocol.VersionUnknown
+	if ok {
+		version = session.GetVersion()
+	}
+
+	hdr, err := wire.ParsePublicHeader(r, protocol.PerspectiveClient, version)
+	if err == wire.ErrPacketWithUnknownVersion {
+		_, err = pconn.WriteTo(wire.WritePublicReset(connID, 0, 0), remoteAddr)
+		return err
+	}
+	if err != nil {
+		return qerr.Error(qerr.InvalidPacketHeader, err.Error())
+	}
+	hdr.Raw = packet[:len(packet)-r.Len()]
+
 	// ignore all Public Reset packets
 	if hdr.ResetFlag {
-		if sessionKnown {
+		if ok {
 			var pr *wire.PublicReset
 			pr, err = wire.ParsePublicReset(r)
 			if err != nil {
-				utils.Infof("Received a Public Reset for connection %x. An error occurred parsing the packet.", hdr.ConnectionID)
+				utils.Infof("Received a Public Reset for connection %x. An error occurred parsing the packet.")
 			} else {
 				utils.Infof("Received a Public Reset for connection %x, rejected packet number: 0x%x.", hdr.ConnectionID, pr.RejectedPacketNumber)
 			}
@@ -344,41 +327,26 @@ func (s *server) handlePacket(rcvRawPacket *receivedRawPacket) error {
 		return nil
 	}
 
-	// If we don't have a session for this connection, and this packet cannot open a new connection, send a Public Reset
-	// This should only happen after a server restart, when we still receive packets for connections that we lost the state for.
-	// TODO(#943): implement sending of IETF draft style stateless resets
-	if !sessionKnown && (!hdr.VersionFlag && hdr.Type != protocol.PacketTypeInitial) {
-		_, err = pconn.WriteTo(wire.WritePublicReset(connID, 0, 0), remoteAddr)
-		return err
-	}
-
 	// a session is only created once the client sent a supported version
 	// if we receive a packet for a connection that already has session, it's probably an old packet that was sent by the client before the version was negotiated
 	// it is safe to drop it
-	if sessionKnown && hdr.VersionFlag && !protocol.IsSupportedVersion(s.config.Versions, hdr.Version) {
+	if ok && hdr.VersionFlag && !protocol.IsSupportedVersion(s.config.Versions, hdr.VersionNumber) {
 		return nil
 	}
 
-	// send a Version Negotiation Packet if the client is speaking a different protocol version
-	// since the client send a Public Header (only gQUIC has a Version Flag), we need to send a gQUIC Version Negotiation Packet
-	if hdr.VersionFlag && !protocol.IsSupportedVersion(s.config.Versions, hdr.Version) {
+	// Send Version Negotiation Packet if the client is speaking a different protocol version
+	if hdr.VersionFlag && !protocol.IsSupportedVersion(s.config.Versions, hdr.VersionNumber) {
 		// drop packets that are too small to be valid first packets
 		if len(packet) < protocol.ClientHelloMinimumSize+len(hdr.Raw) {
 			return errors.New("dropping small packet with unknown version")
 		}
-		utils.Infof("Client offered version %s, sending VersionNegotiationPacket", hdr.Version)
-		if _, err := pconn.WriteTo(wire.ComposeGQUICVersionNegotiation(hdr.ConnectionID, s.config.Versions), remoteAddr); err != nil {
-			return err
-		}
-	}
-	// send an IETF draft style Version Negotiation Packet, if the client sent an unsupported version with an IETF draft style header
-	if hdr.Type == protocol.PacketTypeInitial && !protocol.IsSupportedVersion(s.config.Versions, hdr.Version) {
-		_, err := pconn.WriteTo(wire.ComposeVersionNegotiation(hdr.ConnectionID, hdr.PacketNumber, hdr.Version, s.config.Versions), remoteAddr)
+		utils.Infof("Client offered version %s, sending VersionNegotiationPacket", hdr.VersionNumber)
+		_, err = pconn.WriteTo(wire.ComposeVersionNegotiation(hdr.ConnectionID, s.config.Versions), remoteAddr)
 		return err
 	}
 
-	if !sessionKnown {
-		version := hdr.Version
+	if !ok {
+		version := hdr.VersionNumber
 		if !protocol.IsSupportedVersion(s.config.Versions, version) {
 			return errors.New("Server BUG: negotiated version not supported")
 		}
@@ -390,6 +358,7 @@ func (s *server) handlePacket(rcvRawPacket *receivedRawPacket) error {
 		session, handshakeChan, err = s.newSession(
 			conn,
 			s.pconnMgr,
+			s.config.CreatePaths,
 			version,
 			hdr.ConnectionID,
 			s.scfg,
@@ -406,7 +375,7 @@ func (s *server) handlePacket(rcvRawPacket *receivedRawPacket) error {
 		go func() {
 			// session.run() returns as soon as the session is closed
 			_ = session.run()
-			s.removeConnection(connID)
+			s.removeConnection(hdr.ConnectionID)
 		}()
 
 		go func() {
@@ -423,11 +392,11 @@ func (s *server) handlePacket(rcvRawPacket *receivedRawPacket) error {
 		}()
 	}
 	session.handlePacket(&receivedPacket{
-		remoteAddr: remoteAddr,
-		header:     hdr,
-		data:       packet[len(packet)-r.Len():],
-		rcvTime:    rcvTime,
-		rcvPconn:   pconn,
+		remoteAddr:   remoteAddr,
+		publicHeader: hdr,
+		data:         packet[len(packet)-r.Len():],
+		rcvTime:      rcvTime,
+		rcvPconn:     pconn,
 	})
 	return nil
 }

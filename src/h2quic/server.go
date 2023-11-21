@@ -7,7 +7,7 @@ import (
 	"net"
 	"net/http"
 	"runtime"
-	"strings"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -120,6 +120,10 @@ func (s *Server) handleHeaderStream(session streamCreator) {
 	stream, err := session.AcceptStream()
 	if err != nil {
 		session.Close(qerr.Error(qerr.InvalidHeadersStreamData, err.Error()))
+		return
+	}
+	if stream.StreamID() != 3 {
+		session.Close(qerr.Error(qerr.InternalError, "h2quic server BUG: header stream does not have stream ID 3"))
 		return
 	}
 
@@ -276,11 +280,12 @@ func (s *Server) SetQuicHeaders(hdr http.Header) error {
 	}
 
 	if s.supportedVersionsAsString == "" {
-		var versions []string
-		for _, v := range protocol.SupportedVersions {
-			versions = append(versions, v.ToAltSvc())
+		for i, v := range protocol.SupportedVersions {
+			s.supportedVersionsAsString += strconv.Itoa(int(v))
+			if i != len(protocol.SupportedVersions)-1 {
+				s.supportedVersionsAsString += ","
+			}
 		}
-		s.supportedVersionsAsString = strings.Join(versions, ",")
 	}
 
 	hdr.Add("Alt-Svc", fmt.Sprintf(`quic=":%d"; ma=2592000; v="%s"`, port, s.supportedVersionsAsString))
@@ -297,21 +302,6 @@ func ListenAndServeQUIC(addr, certFile, keyFile string, handler http.Handler) er
 			Addr:    addr,
 			Handler: handler,
 		},
-	}
-	return server.ListenAndServeTLS(certFile, keyFile)
-}
-
-// ListenAndServeQUIC listens on the UDP network address addr and calls the
-// handler for HTTP/2 requests on incoming connections. http.DefaultServeMux is
-// used when handler is nil.
-func ListenAndServeQUICWIthConfig(addr, certFile, keyFile string, handler http.Handler, config *quic.Config) error {
-	server := &Server{
-		Server: &http.Server{
-			Addr:    addr,
-			Handler: handler,
-		},
-		//CloseAfterFirstRequest: true, // FIXME, needed because connections are not properly closed
-		QuicConfig: config,
 	}
 	return server.ListenAndServeTLS(certFile, keyFile)
 }

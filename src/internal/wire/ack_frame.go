@@ -59,7 +59,7 @@ func ParseAckFrame(r *bytes.Reader, version protocol.VersionNumber) (*AckFrame, 
 	}
 
 	// U bit used to indicate that the ACK contains PathID
-	if typeByte&0x10 == 0x10 {
+	if typeByte & 0x10 == 0x10 {
 		pathID, err := r.ReadByte()
 		if err != nil {
 			return nil, err
@@ -257,8 +257,7 @@ func (f *AckFrame) Write(b *bytes.Buffer, version protocol.VersionNumber) error 
 		firstAckBlockLength = f.LargestAcked - f.LowestAcked + 1
 	} else {
 		if f.LargestAcked != f.AckRanges[0].Last {
-			// XXX this inconsistency can happen due to RecoveredFrames, ignore
-			//return errInconsistentAckLargestAcked
+			return errInconsistentAckLargestAcked
 		}
 		if f.LowestAcked != f.AckRanges[len(f.AckRanges)-1].First {
 			return errInconsistentAckLowestAcked

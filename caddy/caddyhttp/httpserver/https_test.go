@@ -20,10 +20,9 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"testing"
 
-	"github.com/caddyserver/caddy/caddytls"
+	"github.com/mholt/caddy/caddytls"
 	"github.com/mholt/certmagic"
 )
 
@@ -56,7 +55,7 @@ func TestRedirPlaintextHost(t *testing.T) {
 		},
 		{
 			Host: "foohost",
-			Port: strconv.Itoa(certmagic.HTTPSPort), // since this is the 'default' HTTPS port, should not be included in Location value
+			Port: HTTPSPort, // since this is the 'default' HTTPS port, should not be included in Location value
 		},
 		{
 			Host:        "*.example.com",
@@ -84,7 +83,7 @@ func TestRedirPlaintextHost(t *testing.T) {
 		if actual, expected := cfg.ListenHost, testcase.ListenHost; actual != expected {
 			t.Errorf("Test %d: Expected redir config to have bindhost %s but got %s", i, expected, actual)
 		}
-		if actual, expected := cfg.Addr.Port, strconv.Itoa(certmagic.HTTPPort); actual != expected {
+		if actual, expected := cfg.Addr.Port, HTTPPort; actual != expected {
 			t.Errorf("Test %d: Expected redir config to have port '%s' but got '%s'", i, expected, actual)
 		}
 

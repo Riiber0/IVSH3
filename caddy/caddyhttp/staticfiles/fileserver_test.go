@@ -28,7 +28,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/caddyserver/caddy"
+	"github.com/mholt/caddy"
 )
 
 // TestServeHTTP covers positive scenarios when serving files.
@@ -264,17 +264,6 @@ func TestServeHTTP(t *testing.T) {
 			expectedLocation:    "https://foo/example.com/../",
 			expectedBodyContent: movedPermanently,
 		},
-		// Test 30 - try to get pre- file.
-		{
-			url:                   "https://foo/sub/gzipped.html",
-			acceptEncoding:        "zstd",
-			expectedStatus:        http.StatusOK,
-			expectedBodyContent:   testFiles[webrootSubGzippedHTMLZst],
-			expectedEtag:          `"2n9ci"`,
-			expectedVary:          "Accept-Encoding",
-			expectedEncoding:      "zstd",
-			expectedContentLength: strconv.Itoa(len(testFiles[webrootSubGzippedHTMLZst])),
-		},
 	}
 
 	for i, test := range tests {
@@ -301,9 +290,6 @@ func TestServeHTTP(t *testing.T) {
 
 		// perform the test
 		status, err := fileServer.ServeHTTP(responseRecorder, request)
-		if status == 0 {
-			status = responseRecorder.Code
-		}
 		etag := responseRecorder.Header().Get("Etag")
 		body := responseRecorder.Body.String()
 		vary := responseRecorder.Header().Get("Vary")
@@ -446,7 +432,7 @@ func TestServeHTTPFailingFS(t *testing.T) {
 		fsErr           error
 		expectedStatus  int
 		expectedErr     error
-		expectedHeaders map[string]struct{}
+		expectedHeaders map[string]string
 	}{
 		{
 			fsErr:          os.ErrNotExist,
@@ -462,7 +448,7 @@ func TestServeHTTPFailingFS(t *testing.T) {
 			fsErr:           errCustom,
 			expectedStatus:  http.StatusServiceUnavailable,
 			expectedErr:     errCustom,
-			expectedHeaders: map[string]struct{}{"Retry-After": {}},
+			expectedHeaders: map[string]string{"Retry-After": "5"},
 		},
 	}
 
@@ -491,9 +477,10 @@ func TestServeHTTPFailingFS(t *testing.T) {
 
 		// check the headers - a special case for server under load
 		if test.expectedHeaders != nil && len(test.expectedHeaders) > 0 {
-			for expectedKey := range test.expectedHeaders {
-				if _, ok := responseRecorder.Header()[expectedKey]; !ok {
-					t.Errorf("Test %d: Expected header %s, but was missing", i, expectedKey)
+			for expectedKey, expectedVal := range test.expectedHeaders {
+				actualVal := responseRecorder.Header().Get(expectedKey)
+				if expectedVal != actualVal {
+					t.Errorf("Test %d: Expected header %s: %s, found %s", i, expectedKey, expectedVal, actualVal)
 				}
 			}
 		}
@@ -560,7 +547,6 @@ var (
 	webrootSubGzippedHTML              = filepath.Join(webrootName, "sub", "gzipped.html")
 	webrootSubGzippedHTMLGz            = filepath.Join(webrootName, "sub", "gzipped.html.gz")
 	webrootSubGzippedHTMLBr            = filepath.Join(webrootName, "sub", "gzipped.html.br")
-	webrootSubGzippedHTMLZst           = filepath.Join(webrootName, "sub", "gzipped.html.zst")
 	webrootSubBrotliHTML               = filepath.Join(webrootName, "sub", "brotli.html")
 	webrootSubBrotliHTMLGz             = filepath.Join(webrootName, "sub", "brotli.html.gz")
 	webrootSubBrotliHTMLBr             = filepath.Join(webrootName, "sub", "brotli.html.br")
@@ -588,10 +574,9 @@ var testFiles = map[string]string{
 	webrootSubGzippedHTML:              "<h1>gzipped.html</h1>",
 	webrootSubGzippedHTMLGz:            "1.gzipped.html.gz",
 	webrootSubGzippedHTMLBr:            "2.gzipped.html.br",
-	webrootSubGzippedHTMLZst:           "3.gzipped.html.zst",
-	webrootSubBrotliHTML:               "4.brotli.html",
-	webrootSubBrotliHTMLGz:             "5.brotli.html.gz",
-	webrootSubBrotliHTMLBr:             "6.brotli.html.br",
+	webrootSubBrotliHTML:               "3.brotli.html",
+	webrootSubBrotliHTMLGz:             "4.brotli.html.gz",
+	webrootSubBrotliHTMLBr:             "5.brotli.html.br",
 	webrootSubBarDirWithIndexIndexHTML: "<h1>bar/dirwithindex/index.html</h1>",
 }
 

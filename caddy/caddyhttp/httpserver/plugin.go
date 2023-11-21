@@ -27,31 +27,29 @@ import (
 	"strings"
 	"time"
 
-	"github.com/caddyserver/caddy"
-	"github.com/caddyserver/caddy/caddyfile"
-	"github.com/caddyserver/caddy/caddyhttp/staticfiles"
-	"github.com/caddyserver/caddy/caddytls"
-	"github.com/caddyserver/caddy/telemetry"
+	quic "github.com/lucas-clemente/quic-go"
+	"github.com/mholt/caddy"
+	"github.com/mholt/caddy/caddyfile"
+	"github.com/mholt/caddy/caddyhttp/staticfiles"
+	"github.com/mholt/caddy/caddytls"
+	"github.com/mholt/caddy/telemetry"
 	"github.com/mholt/certmagic"
 )
 
 const serverType = "http"
 
 func init() {
-	flag.IntVar(&certmagic.HTTPPort, "http-port", certmagic.HTTPPort, "Default port to use for HTTP")
-	flag.IntVar(&certmagic.HTTPSPort, "https-port", certmagic.HTTPSPort, "Default port to use for HTTPS")
+	flag.StringVar(&HTTPPort, "http-port", HTTPPort, "Default port to use for HTTP")
+	flag.StringVar(&HTTPSPort, "https-port", HTTPSPort, "Default port to use for HTTPS")
 	flag.StringVar(&Host, "host", DefaultHost, "Default host")
 	flag.StringVar(&Port, "port", DefaultPort, "Default port")
 	flag.StringVar(&Root, "root", DefaultRoot, "Root path of default site")
 	flag.DurationVar(&GracefulTimeout, "grace", 5*time.Second, "Maximum duration of graceful shutdown")
 	flag.BoolVar(&HTTP2, "http2", true, "Use HTTP/2")
 	flag.BoolVar(&QUIC, "quic", false, "Use experimental QUIC")
-	flag.BoolVar(&MPQUIC, "mp", false, "Use experimental multipath QUIC")
-	flag.StringVar(&MPQUIC_SCHED, "scheduler", "rr", "Scheduling scheme for multipath QUIC")
-	flag.StringVar(&MPQUIC_CC, "cc", "olia", "Congestion control for multipath QUIC")
-	flag.BoolVar(&FECEnable, "fec", false, "Enable QUIC-FEC")
-	flag.StringVar(&FECConfig, "fecConfig", "xor4", "FEC configuration to use")
-	flag.BoolVar(&QUIC_EXPERIMENT_LOGGING, "expLog", false, "log internals for experiment evaluation")
+	flag.BoolVar(&useMP, "mp", false, "Use multipath QUIC")
+	flag.StringVar(&quic.SchedulerAlgorithm, "scheduler", "lowRTT", "specify the scheduling algorithm [lowRTT, RR, redundant]")
+	flag.StringVar(&quic.CongestionControl, "cc", "cubic", "specify the cc algorithm [cubic, olia]")
 
 	caddy.RegisterServerType(serverType, caddy.ServerType{
 		Directives: func() []string { return directives },
@@ -134,8 +132,6 @@ func (h *httpContext) saveConfig(key string, cfg *SiteConfig) {
 // be parsed and executed.
 func (h *httpContext) InspectServerBlocks(sourceFile string, serverBlocks []caddyfile.ServerBlock) ([]caddyfile.ServerBlock, error) {
 	siteAddrs := make(map[string]string)
-	httpPort := strconv.Itoa(certmagic.HTTPPort)
-	httpsPort := strconv.Itoa(certmagic.HTTPSPort)
 
 	// For each address in each server block, make a new config
 	for _, sb := range serverBlocks {
@@ -180,15 +176,15 @@ func (h *httpContext) InspectServerBlocks(sourceFile string, serverBlocks []cadd
 			// If default HTTP or HTTPS ports have been customized,
 			// make sure the ACME challenge ports match
 			var altHTTPPort, altTLSALPNPort int
-			if httpPort != DefaultHTTPPort {
-				portInt, err := strconv.Atoi(httpPort)
+			if HTTPPort != DefaultHTTPPort {
+				portInt, err := strconv.Atoi(HTTPPort)
 				if err != nil {
 					return nil, err
 				}
 				altHTTPPort = portInt
 			}
-			if httpsPort != DefaultHTTPSPort {
-				portInt, err := strconv.Atoi(httpsPort)
+			if HTTPSPort != DefaultHTTPSPort {
+				portInt, err := strconv.Atoi(HTTPSPort)
 				if err != nil {
 					return nil, err
 				}
@@ -236,9 +232,6 @@ func (h *httpContext) InspectServerBlocks(sourceFile string, serverBlocks []cadd
 // MakeServers uses the newly-created siteConfigs to
 // create and return a list of server instances.
 func (h *httpContext) MakeServers() ([]caddy.Server, error) {
-	httpPort := strconv.Itoa(certmagic.HTTPPort)
-	httpsPort := strconv.Itoa(certmagic.HTTPSPort)
-
 	// make a rough estimate as to whether we're in a "production
 	// environment/system" - start by assuming that most production
 	// servers will set their default CA endpoint to a public,
@@ -277,7 +270,7 @@ func (h *httpContext) MakeServers() ([]caddy.Server, error) {
 		if !cfg.TLS.Enabled {
 			continue
 		}
-		if cfg.Addr.Port == httpPort || cfg.Addr.Scheme == "http" {
+		if cfg.Addr.Port == HTTPPort || cfg.Addr.Scheme == "http" {
 			cfg.TLS.Enabled = false
 			log.Printf("[WARNING] TLS disabled for %s", cfg.Addr)
 		} else if cfg.Addr.Scheme == "" {
@@ -292,7 +285,7 @@ func (h *httpContext) MakeServers() ([]caddy.Server, error) {
 			// this is vital, otherwise the function call below that
 			// sets the listener address will use the default port
 			// instead of 443 because it doesn't know about TLS.
-			cfg.Addr.Port = httpsPort
+			cfg.Addr.Port = HTTPSPort
 		}
 		if cfg.TLS.ClientAuth != tls.NoClientCert {
 			if QUIC {
@@ -432,7 +425,7 @@ func (a Address) String() string {
 	}
 	scheme := a.Scheme
 	if scheme == "" {
-		if a.Port == strconv.Itoa(certmagic.HTTPSPort) {
+		if a.Port == HTTPSPort {
 			scheme = "https"
 		} else {
 			scheme = "http"
@@ -496,10 +489,11 @@ func (a Address) Key() string {
 	if a.Host != "" {
 		res += a.Host
 	}
-	// insert port only if the original has its own explicit port
-	if a.Port != "" && len(a.Original) >= len(res) &&
-		strings.HasPrefix(a.Original[len(res):], ":"+a.Port) {
-		res += ":" + a.Port
+	if a.Port != "" {
+		if strings.HasPrefix(a.Original[len(res):], ":"+a.Port) {
+			// insert port only if the original has its own explicit port
+			res += ":" + a.Port
+		}
 	}
 	if a.Path != "" {
 		res += a.Path
@@ -511,18 +505,6 @@ func (a Address) Key() string {
 // scheme, host, port, and path portions, as well as the original input string.
 func standardizeAddress(str string) (Address, error) {
 	input := str
-
-	httpPort := strconv.Itoa(certmagic.HTTPPort)
-	httpsPort := strconv.Itoa(certmagic.HTTPSPort)
-
-	// As of Go 1.12.8 (Aug 2019), ports that are service names such
-	// as ":http" and ":https" are no longer parsed as they were
-	// before, which is a breaking change for us. Attempt to smooth
-	// this over for now by replacing those strings with their port
-	// equivalents. See
-	// https://github.com/golang/go/commit/3226f2d492963d361af9dfc6714ef141ba606713
-	str = strings.Replace(str, ":https", ":"+httpsPort, 1)
-	str = strings.Replace(str, ":http", ":"+httpPort, 1)
 
 	// Split input into components (prepend with // to assert host by default)
 	if !strings.Contains(str, "//") && !strings.HasPrefix(str, "/") {
@@ -545,28 +527,32 @@ func standardizeAddress(str string) (Address, error) {
 	// see if we can set port based off scheme
 	if port == "" {
 		if u.Scheme == "http" {
-			port = httpPort
+			port = HTTPPort
 		} else if u.Scheme == "https" {
-			port = httpsPort
+			port = HTTPSPort
 		}
 	}
 
+	// repeated or conflicting scheme is confusing, so error
+	if u.Scheme != "" && (port == "http" || port == "https") {
+		return Address{}, fmt.Errorf("[%s] scheme specified twice in address", input)
+	}
+
 	// error if scheme and port combination violate convention
-	if (u.Scheme == "http" && port == httpsPort) || (u.Scheme == "https" && port == httpPort) {
+	if (u.Scheme == "http" && port == HTTPSPort) || (u.Scheme == "https" && port == HTTPPort) {
 		return Address{}, fmt.Errorf("[%s] scheme and port violate convention", input)
 	}
 
 	// standardize http and https ports to their respective port numbers
-	// (this behavior changed in Go 1.12.8)
-	if u.Scheme == "" {
-		if port == httpPort {
-			u.Scheme = "http"
-		} else if port == httpsPort {
-			u.Scheme = "https"
-		}
+	if port == "http" {
+		u.Scheme = "http"
+		port = HTTPPort
+	} else if port == "https" {
+		u.Scheme = "https"
+		port = HTTPSPort
 	}
 
-	return Address{Original: input, Scheme: u.Scheme, Host: host, Port: port, Path: u.Path}, nil
+	return Address{Original: input, Scheme: u.Scheme, Host: host, Port: port, Path: u.Path}, err
 }
 
 // RegisterDevDirective splices name into the list of directives
@@ -665,7 +651,6 @@ var directives = []string{
 	"filter",       // github.com/echocat/caddy-filter
 	"ipfilter",     // github.com/pyed/ipfilter
 	"ratelimit",    // github.com/xuqingfeng/caddy-rate-limit
-	"recaptcha",    // github.com/defund/caddy-recaptcha
 	"expires",      // github.com/epicagency/caddy-expires
 	"forwardproxy", // github.com/caddyserver/forwardproxy
 	"basicauth",
@@ -675,14 +660,13 @@ var directives = []string{
 	"s3browser", // github.com/techknowlogick/caddy-s3browser
 	"nobots",    // github.com/Xumeiquer/nobots
 	"mime",
-	"login",      // github.com/tarent/loginsrv/caddy
-	"reauth",     // github.com/freman/caddy-reauth
-	"extauth",    // github.com/BTBurke/caddy-extauth
-	"jwt",        // github.com/BTBurke/caddy-jwt
-	"permission", // github.com/dhaavi/caddy-permission
-	"jsonp",      // github.com/pschlump/caddy-jsonp
-	"upload",     // blitznote.com/src/caddy.upload
-	"multipass",  // github.com/namsral/multipass/caddy
+	"login",     // github.com/tarent/loginsrv/caddy
+	"reauth",    // github.com/freman/caddy-reauth
+	"extauth",   // github.com/BTBurke/caddy-extauth
+	"jwt",       // github.com/BTBurke/caddy-jwt
+	"jsonp",     // github.com/pschlump/caddy-jsonp
+	"upload",    // blitznote.com/src/caddy.upload
+	"multipass", // github.com/namsral/multipass/caddy
 	"internal",
 	"pprof",
 	"expvar",
@@ -691,7 +675,6 @@ var directives = []string{
 	"prometheus", // github.com/miekg/caddy-prometheus
 	"templates",
 	"proxy",
-	"pubsub", // github.com/jung-kurt/caddy-pubsub
 	"fastcgi",
 	"cgi", // github.com/jung-kurt/caddy-cgi
 	"websocket",
@@ -743,18 +726,12 @@ var (
 	// QUIC indicates whether QUIC is enabled or not.
 	QUIC bool
 
-	// MPQUIC indicates whether multipath QUIC is enabled or not
-	MPQUIC bool
+	// useMP indicates wether QUIC should be run in multipath mode or not.
+	useMP bool
 
-	// MPQUIC_SCHED indicates the scheduling scheme used for multipath QUIC
-	MPQUIC_SCHED string
+	// HTTPPort is the port to use for HTTP.
+	HTTPPort = DefaultHTTPPort
 
-	// MPQUIC_CC indicates the congestion control scheme used for multipath QUIC
-	MPQUIC_CC string
-
-	FECEnable bool
-
-	FECConfig string
-
-	QUIC_EXPERIMENT_LOGGING bool
+	// HTTPSPort is the port to use for HTTPS.
+	HTTPSPort = DefaultHTTPSPort
 )

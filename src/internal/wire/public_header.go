@@ -3,7 +3,6 @@ package wire
 import (
 	"bytes"
 	"errors"
-	"fmt"
 	"io"
 
 	"github.com/lucas-clemente/quic-go/internal/protocol"
@@ -12,34 +11,56 @@ import (
 )
 
 var (
+	// ErrPacketWithUnknownVersion occurs when a packet with an unknown version is parsed.
+	// This can happen when the server is restarted. The client will send a packet without a version number.
+	ErrPacketWithUnknownVersion          = errors.New("PublicHeader: Received a packet without version number, that we don't know the version for")
 	errResetAndVersionFlagSet            = errors.New("PublicHeader: Reset Flag and Version Flag should not be set at the same time")
-	errReceivedOmittedConnectionID       = qerr.Error(qerr.InvalidPacketHeader, "receiving packets with omitted ConnectionID is not supported")
+	errReceivedTruncatedConnectionID     = qerr.Error(qerr.InvalidPacketHeader, "receiving packets with truncated ConnectionID is not supported")
 	errInvalidConnectionID               = qerr.Error(qerr.InvalidPacketHeader, "connection ID cannot be 0")
 	errGetLengthNotForVersionNegotiation = errors.New("PublicHeader: GetLength cannot be called for VersionNegotiation packets")
 )
 
-// writePublicHeader writes a Public Header.
-func (h *Header) writePublicHeader(b *bytes.Buffer, pers protocol.Perspective, version protocol.VersionNumber) error {
+// The PublicHeader of a QUIC packet. Warning: This struct should not be considered stable and will change soon.
+type PublicHeader struct {
+	Raw                  []byte
+	ConnectionID         protocol.ConnectionID
+	PathID               protocol.PathID
+	VersionFlag          bool
+	ResetFlag            bool
+	TruncateConnectionID bool
+	MultipathFlag        bool
+	PacketNumberLen      protocol.PacketNumberLen
+	PacketNumber         protocol.PacketNumber
+	VersionNumber        protocol.VersionNumber   // VersionNumber sent by the client
+	SupportedVersions    []protocol.VersionNumber // VersionNumbers sent by the server
+	DiversificationNonce []byte
+}
+
+// Write writes a public header. Warning: This API should not be considered stable and will change soon.
+func (h *PublicHeader) Write(b *bytes.Buffer, version protocol.VersionNumber, pers protocol.Perspective) error {
+	publicFlagByte := uint8(0x00)
+
 	if h.VersionFlag && h.ResetFlag {
 		return errResetAndVersionFlagSet
 	}
 
-	publicFlagByte := uint8(0x00)
 	if h.VersionFlag {
 		publicFlagByte |= 0x01
 	}
 	if h.ResetFlag {
 		publicFlagByte |= 0x02
 	}
-	if !h.OmitConnectionID {
+	if !h.TruncateConnectionID {
 		publicFlagByte |= 0x08
 	}
+
 	if len(h.DiversificationNonce) > 0 {
 		if len(h.DiversificationNonce) != 32 {
 			return errors.New("invalid diversification nonce length")
 		}
 		publicFlagByte |= 0x04
 	}
+
 	// only set PacketNumberLen bits if a packet number will be written
 	if h.hasPacketNumber(pers) {
 		switch h.PacketNumberLen {
@@ -54,21 +75,29 @@ func (h *Header) writePublicHeader(b *bytes.Buffer, pers protocol.Perspective, v
 		}
 	}
 
-	if h.FECFlag {
-		publicFlagByte |= 0x80
+	if h.MultipathFlag {
+		publicFlagByte |= 0x40
 	}
 
 	b.WriteByte(publicFlagByte)
 
-	if !h.OmitConnectionID {
-		utils.BigEndian.WriteUint64(b, uint64(h.ConnectionID))
+	if !h.TruncateConnectionID {
+		// always read the connection ID in little endian
+		utils.LittleEndian.WriteUint64(b, uint64(h.ConnectionID))
 	}
+
 	if h.VersionFlag && pers == protocol.PerspectiveClient {
-		utils.BigEndian.WriteUint32(b, uint32(h.Version))
+		utils.LittleEndian.WriteUint32(b, protocol.VersionNumberToTag(h.VersionNumber))
 	}
+
 	if len(h.DiversificationNonce) > 0 {
 		b.Write(h.DiversificationNonce)
 	}
+
+	if h.MultipathFlag {
+		b.WriteByte(uint8(h.PathID))
+	}
+
 	// if we're a server, and the VersionFlag is set, we must not include anything else in the packet
 	if !h.hasPacketNumber(pers) {
 		return nil
@@ -87,20 +116,43 @@ func (h *Header) writePublicHeader(b *bytes.Buffer, pers protocol.Perspective, v
 		return errors.New("PublicHeader: PacketNumberLen not set")
 	}
 
-	// Write AFTER packet number, more to avoid deployment issues than something else
-	b.WriteByte(uint8(h.PathID))
-
-	if h.FECFlag {
-		utils.BigEndian.WriteUint32(b, uint32(h.FECPayloadID))
-	}
-
 	return nil
 }
 
-// parsePublicHeader parses a QUIC packet's Public Header.
+// PeekConnectionID parses the connection ID from a QUIC packet's public header.
+// If no error occurs, it restores the read position in the bytes.Reader.
+func PeekConnectionID(b *bytes.Reader, packetSentBy protocol.Perspective) (protocol.ConnectionID, error) {
+	var connectionID protocol.ConnectionID
+	publicFlagByte, err := b.ReadByte()
+	if err != nil {
+		return 0, err
+	}
+	// unread the public flag byte
+	defer b.UnreadByte()
+
+	truncateConnectionID := publicFlagByte&0x08 == 0
+	if truncateConnectionID && packetSentBy == protocol.PerspectiveClient {
+		return 0, errReceivedTruncatedConnectionID
+	}
+	if !truncateConnectionID {
+		connID, err := utils.LittleEndian.ReadUint64(b)
+		if err != nil {
+			return 0, err
+		}
+		connectionID = protocol.ConnectionID(connID)
+		// unread the connection ID
+		for i := 0; i < 8; i++ {
+			b.UnreadByte()
+		}
+	}
+	return connectionID, nil
+}
+
+// ParsePublicHeader parses a QUIC packet's public header.
 // The packetSentBy is the perspective of the peer that sent this PublicHeader, i.e. if we're the server, packetSentBy should be PerspectiveClient.
-func parsePublicHeader(b *bytes.Reader, packetSentBy protocol.Perspective) (*Header, error) {
-	header := &Header{}
+// Warning: This API should not be considered stable and will change soon.
+func ParsePublicHeader(b *bytes.Reader, packetSentBy protocol.Perspective, version protocol.VersionNumber) (*PublicHeader, error) {
+	header := &PublicHeader{}
 
 	// First byte
 	publicFlagByte, err := b.ReadByte()
@@ -109,6 +161,9 @@ func parsePublicHeader(b *bytes.Reader, packetSentBy protocol.Perspective) (*Hea
 	}
 	header.ResetFlag = publicFlagByte&0x02 > 0
 	header.VersionFlag = publicFlagByte&0x01 > 0
+	if version == protocol.VersionUnknown && !(header.VersionFlag || header.ResetFlag) {
+		return nil, ErrPacketWithUnknownVersion
+	}
 
 	// TODO: activate this check once Chrome sends the correct value
 	// see https://github.com/lucas-clemente/quic-go/issues/232
@@ -116,12 +171,10 @@ func parsePublicHeader(b *bytes.Reader, packetSentBy protocol.Perspective) (*Hea
 	// 	return nil, errors.New("diversification nonces should only be sent by servers")
 	// }
 
-	header.OmitConnectionID = publicFlagByte&0x08 == 0
-	if header.OmitConnectionID && packetSentBy == protocol.PerspectiveClient {
-		return nil, errReceivedOmittedConnectionID
+	header.TruncateConnectionID = publicFlagByte&0x08 == 0
+	if header.TruncateConnectionID && packetSentBy == protocol.PerspectiveClient {
+		return nil, errReceivedTruncatedConnectionID
 	}
-
-	header.FECFlag = publicFlagByte&0x80 != 0
 
 	if header.hasPacketNumber(packetSentBy) {
 		switch publicFlagByte & 0x30 {
@@ -136,10 +189,13 @@ func parsePublicHeader(b *bytes.Reader, packetSentBy protocol.Perspective) (*Hea
 		}
 	}
 
+	header.MultipathFlag = publicFlagByte&0x40 > 0
+
 	// Connection ID
-	if !header.OmitConnectionID {
+	if !header.TruncateConnectionID {
 		var connID uint64
-		connID, err = utils.BigEndian.ReadUint64(b)
+		// always write the connection ID in little endian
+		connID, err = utils.LittleEndian.ReadUint64(b)
 		if err != nil {
 			return nil, err
 		}
@@ -164,20 +220,17 @@ func parsePublicHeader(b *bytes.Reader, packetSentBy protocol.Perspective) (*Hea
 	// Version (optional)
 	if !header.ResetFlag && header.VersionFlag {
 		if packetSentBy == protocol.PerspectiveServer { // parse the version negotiaton packet
-			if b.Len() == 0 {
-				return nil, qerr.Error(qerr.InvalidVersionNegotiationPacket, "empty version list")
-			}
 			if b.Len()%4 != 0 {
 				return nil, qerr.InvalidVersionNegotiationPacket
 			}
 			header.SupportedVersions = make([]protocol.VersionNumber, 0)
 			for {
 				var versionTag uint32
-				versionTag, err = utils.BigEndian.ReadUint32(b)
+				versionTag, err = utils.LittleEndian.ReadUint32(b)
 				if err != nil {
 					break
 				}
-				v := protocol.VersionNumber(versionTag)
+				v := protocol.VersionTagToNumber(versionTag)
 				header.SupportedVersions = append(header.SupportedVersions, v)
 			}
 			// a version negotiation packet doesn't have a packet number
@@ -185,85 +238,79 @@ func parsePublicHeader(b *bytes.Reader, packetSentBy protocol.Perspective) (*Hea
 		}
 		// packet was sent by the client. Read the version number
 		var versionTag uint32
-		versionTag, err = utils.BigEndian.ReadUint32(b)
+		versionTag, err = utils.LittleEndian.ReadUint32(b)
 		if err != nil {
 			return nil, err
 		}
-		header.Version = protocol.VersionNumber(versionTag)
+		header.VersionNumber = protocol.VersionTagToNumber(versionTag)
+		version = header.VersionNumber
+	}
+
+	// Path ID
+	if header.MultipathFlag {
+		pathID, err := b.ReadByte()
+		if err != nil {
+			return nil, err
+		}
+		header.PathID = protocol.PathID(pathID)
+	} else {
+		header.PathID = 0
 	}
 
 	// Packet number
 	if header.hasPacketNumber(packetSentBy) {
-		packetNumber, err := utils.BigEndian.ReadUintN(b, uint8(header.PacketNumberLen))
+		packetNumber, err := utils.GetByteOrder(version).ReadUintN(b, uint8(header.PacketNumberLen))
 		if err != nil {
 			return nil, err
 		}
 		header.PacketNumber = protocol.PacketNumber(packetNumber)
 	}
 
-	// Path ID (only present if the packet number is present too)
-	if header.hasPacketNumber(packetSentBy) {
-		pathID, err := b.ReadByte()
-		if err != nil {
-			return nil, err
-		}
-		header.PathID = protocol.PathID(pathID)
-	}
-
-	// parse the FEC payload ID if the FEC flag is set
-	if header.FECFlag {
-		fpid, err := utils.BigEndian.ReadUint32(b)
-		if err != nil {
-			return nil, err
-		}
-		header.FECPayloadID = protocol.FECPayloadID(fpid)
-		if err != nil {
-			return nil, err
-		}
-	}
-
 	return header, nil
 }
 
-// getPublicHeaderLength gets the length of the publicHeader in bytes.
+// GetLength gets the length of the publicHeader in bytes.
 // It can only be called for regular packets.
-func (h *Header) getPublicHeaderLength(pers protocol.Perspective) (protocol.ByteCount, error) {
+func (h *PublicHeader) GetLength(pers protocol.Perspective) (protocol.ByteCount, error) {
 	if h.VersionFlag && h.ResetFlag {
 		return 0, errResetAndVersionFlagSet
 	}
+
 	if h.VersionFlag && pers == protocol.PerspectiveServer {
 		return 0, errGetLengthNotForVersionNegotiation
 	}
 
 	length := protocol.ByteCount(1) // 1 byte for public flags
+
 	if h.hasPacketNumber(pers) {
 		if h.PacketNumberLen != protocol.PacketNumberLen1 && h.PacketNumberLen != protocol.PacketNumberLen2 && h.PacketNumberLen != protocol.PacketNumberLen4 && h.PacketNumberLen != protocol.PacketNumberLen6 {
 			return 0, errPacketNumberLenNotSet
 		}
 		length += protocol.ByteCount(h.PacketNumberLen)
 	}
-	if !h.OmitConnectionID {
+
+	if !h.TruncateConnectionID {
 		length += 8 // 8 bytes for the connection ID
 	}
+
 	// Version Number in packets sent by the client
 	if h.VersionFlag {
 		length += 4
 	}
-	length += protocol.ByteCount(len(h.DiversificationNonce))
-	// The PathID is always present now
-	length++
 
-	// SourceFECPayloadID in FEC-protected packets
-	if h.FECFlag {
-		length += 4
+	length += protocol.ByteCount(len(h.DiversificationNonce))
+
+	// If Multipath flag is set, the PathID is present
+	if h.MultipathFlag {
+		length += 1
 	}
 
 	return length, nil
 }
 
-// hasPacketNumber determines if this Public Header will contain a packet number
+// hasPacketNumber determines if this PublicHeader will contain a packet number
 // this depends on the ResetFlag, the VersionFlag and who sent the packet
-func (h *Header) hasPacketNumber(packetSentBy protocol.Perspective) bool {
+func (h *PublicHeader) hasPacketNumber(packetSentBy protocol.Perspective) bool {
 	if h.ResetFlag {
 		return false
 	}
@@ -271,16 +318,4 @@ func (h *Header) hasPacketNumber(packetSentBy protocol.Perspective) bool {
 		return false
 	}
 	return true
-}
-
-func (h *Header) logPublicHeader() {
-	connID := "(omitted)"
-	if !h.OmitConnectionID {
-		connID = fmt.Sprintf("%#x", h.ConnectionID)
-	}
-	ver := "(unset)"
-	if h.Version != 0 {
-		ver = fmt.Sprintf("%s", h.Version)
-	}
-	utils.Debugf("   Public Header{ConnectionID: %s, PathID: %#x, PacketNumber: %#x, PacketNumberLen: %d, Version: %s, DiversificationNonce: %#v}", connID, h.PathID, h.PacketNumber, h.PacketNumberLen, ver, h.DiversificationNonce)
 }

@@ -38,16 +38,12 @@ func ParseConnectionCloseFrame(r *bytes.Reader, version protocol.VersionNumber) 
 		return nil, err
 	}
 
-	// shortcut to prevent the unneccessary allocation of dataLen bytes
-	// if the dataLen is larger than the remaining length of the packet
-	// reading the whole reason phrase would result in EOF when attempting to READ
-	if int(reasonPhraseLen) > r.Len() {
-		return nil, io.EOF
+	if reasonPhraseLen > uint16(protocol.MaxPacketSize) {
+		return nil, qerr.Error(qerr.InvalidConnectionCloseData, "reason phrase too long")
 	}
 
 	reasonPhrase := make([]byte, reasonPhraseLen)
 	if _, err := io.ReadFull(r, reasonPhrase); err != nil {
-		// this should never happen, since we already checked the reasonPhraseLen earlier
 		return nil, err
 	}
 	frame.ReasonPhrase = string(reasonPhrase)

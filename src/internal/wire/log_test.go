@@ -3,7 +3,6 @@ package wire
 import (
 	"bytes"
 	"log"
-	"net"
 	"os"
 	"time"
 
@@ -84,21 +83,13 @@ var _ = Describe("Frame logging", func() {
 		Expect(buf.Bytes()).To(ContainSubstring("\t-> &wire.StopWaitingFrame{LeastUnacked: 0x1337, PacketNumberLen: 0x4}\n"))
 	})
 
-	It("logs AddAddress frames", func() {
-		frame := &AddAddressFrame{
-			AddrID: 7,
-			Addr:   net.UDPAddr{IP: net.IPv4(2, 8, 4, 6), Port: 1337},
-			Backup: false,
+	It("logs ClosePath frames", func() {
+		frame := &ClosePathFrame{
+			PathID:       7,
+			LargestAcked: 0x1337,
+			LowestAcked:  0x42,
 		}
 		LogFrame(frame, false)
-		Expect(buf.Bytes()).To(ContainSubstring("\t<- &wire.AddAddressFrame{AddrID: 0x7, Addr: 2.8.4.6:1337, Backup: false}\n"))
-	})
-
-	It("logs RemoveAddress frames", func() {
-		frame := &RemoveAddressFrame{
-			AddrID: 7,
-		}
-		LogFrame(frame, false)
-		Expect(buf.Bytes()).To(ContainSubstring("\t<- &wire.RemoveAddressFrame{AddrID: 0x7}\n"))
+		Expect(buf.Bytes()).To(ContainSubstring("\t<- &wire.ClosePathFrame{PathID: 0x7, LargestAcked: 0x1337, LowestAcked: 0x42, AckRanges: []wire.AckRange(nil)}\n"))
 	})
 })

@@ -19,12 +19,15 @@ import (
 	"crypto/x509"
 	"fmt"
 	"io/ioutil"
+	"os"
+	"sync/atomic"
 	"time"
 
-	"github.com/caddyserver/caddy"
-	"github.com/go-acme/lego/v3/certcrypto"
-	"github.com/go-acme/lego/v3/challenge/tlsalpn01"
+	"github.com/go-acme/lego/challenge/tlsalpn01"
+
+	"github.com/go-acme/lego/certcrypto"
 	"github.com/klauspost/cpuid"
+	"github.com/mholt/caddy"
 	"github.com/mholt/certmagic"
 )
 
@@ -100,14 +103,31 @@ func NewConfig(inst *caddy.Instance) (*Config, error) {
 	certCache, ok := inst.Storage[CertCacheInstStorageKey].(*certmagic.Cache)
 	inst.StorageMu.RUnlock()
 	if !ok || certCache == nil {
-		if err := makeClusteringPlugin(); err != nil {
-			return nil, err
+		// set up the clustering plugin, if there is one (and there should always
+		// be one since this tls plugin requires it) -- this should be done exactly
+		// once, but we can't do it during init while plugins are still registering,
+		// so do it as soon as we run a setup)
+		if atomic.CompareAndSwapInt32(&clusterPluginSetup, 0, 1) {
+			clusterPluginName := os.Getenv("CADDY_CLUSTERING")
+			if clusterPluginName == "" {
+				clusterPluginName = "file" // name of default storage plugin
+			}
+			clusterFn, ok := clusterProviders[clusterPluginName]
+			if ok {
+				storage, err := clusterFn()
+				if err != nil {
+					return nil, fmt.Errorf("constructing cluster plugin %s: %v", clusterPluginName, err)
+				}
+				certmagic.Default.Storage = storage
+			} else {
+				return nil, fmt.Errorf("unrecognized cluster plugin (was it included in the Caddy build?): %s", clusterPluginName)
+			}
 		}
 		certCache = certmagic.NewCache(certmagic.CacheOptions{
 			GetConfigForCert: func(cert certmagic.Certificate) (certmagic.Config, error) {
-				inst.StorageMu.RLock()
+				inst.StorageMu.Lock()
 				cfgMap, ok := inst.Storage[configMapKey].(map[string]*Config)
-				inst.StorageMu.RUnlock()
+				inst.StorageMu.Unlock()
 				if ok {
 					for hostname, cfg := range cfgMap {
 						if cfg.Manager != nil && hostname == cert.Names[0] {
@@ -115,29 +135,22 @@ func NewConfig(inst *caddy.Instance) (*Config, error) {
 						}
 					}
 				}
+				// returning Default not strictly necessary, since Default is used as template
+				// anyway; but this makes it clear that that's what we fall back to
 				return certmagic.Default, nil
 			},
 		})
-
 		storageCleaningTicker := time.NewTicker(12 * time.Hour)
-		done := make(chan bool)
 		go func() {
-			for {
-				select {
-				case <-done:
-					storageCleaningTicker.Stop()
-					return
-				case <-storageCleaningTicker.C:
-					certmagic.CleanStorage(certmagic.Default.Storage, certmagic.CleanStorageOptions{
-						OCSPStaples: true,
-					})
-				}
+			for range storageCleaningTicker.C {
+				certmagic.CleanStorage(certmagic.Default.Storage, certmagic.CleanStorageOptions{
+					OCSPStaples: true,
+				})
 			}
 		}()
 		inst.OnShutdown = append(inst.OnShutdown, func() error {
 			certCache.Stop()
-			done <- true
-			close(done)
+			storageCleaningTicker.Stop()
 			return nil
 		})
 
@@ -314,7 +327,7 @@ func MakeTLSConfig(configs []*Config) (*tls.Config, error) {
 		// A tls.Config must have Certificates or GetCertificate
 		// set, in order to be accepted by tls.Listen and quic.Listen.
 		// TODO: remove this once the standard library allows a tls.Config with
-		// only GetConfigForClient set. https://github.com/caddyserver/caddy/pull/2404
+		// only GetConfigForClient set. https://github.com/mholt/caddy/pull/2404
 		GetCertificate: func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
 			return nil, fmt.Errorf("all certificates configured via GetConfigForClient")
 		},
@@ -372,9 +385,16 @@ func assertConfigsCompatible(cfg1, cfg2 *Config) error {
 	if c1.MaxVersion != c2.MaxVersion {
 		return fmt.Errorf("maximum TLS version mismatch")
 	}
-
-	if err := assertClientCertsCompatible(cfg1, cfg2); err != nil {
-		return err
+	if c1.ClientAuth != c2.ClientAuth {
+		return fmt.Errorf("client authentication policy mismatch")
+	}
+	if c1.ClientAuth != tls.NoClientCert && c2.ClientAuth != tls.NoClientCert && c1.ClientCAs != c2.ClientCAs {
+		// Two hosts defined on the same listener are not compatible if they
+		// have ClientAuth enabled, because there's no guarantee beyond the
+		// hostname which config will be used (because SNI only has server name).
+		// To prevent clients from bypassing authentication, require that
+		// ClientAuth be configured in an unambiguous manner.
+		return fmt.Errorf("multiple hosts requiring client authentication ambiguously configured")
 	}
 
 	return nil
@@ -511,7 +531,7 @@ var defaultCiphersNonAESNI = []uint16{
 // getPreferredDefaultCiphers returns an appropriate cipher suite to use, depending on
 // the hardware support available for AES-NI.
 //
-// See https://github.com/caddyserver/caddy/issues/1674
+// See https://github.com/mholt/caddy/issues/1674
 func getPreferredDefaultCiphers() []uint16 {
 	if cpuid.CPU.AesNi() {
 		return defaultCiphers
@@ -519,37 +539,6 @@ func getPreferredDefaultCiphers() []uint16 {
 
 	// Return a cipher suite that prefers ChaCha20
 	return defaultCiphersNonAESNI
-}
-
-func assertClientCertsCompatible(cfg1, cfg2 *Config) error {
-	c1, c2 := cfg1.tlsConfig, cfg2.tlsConfig
-	if c1.ClientAuth != c2.ClientAuth {
-		return fmt.Errorf("client authentication policy mismatch")
-	}
-
-	if c1.ClientAuth == tls.NoClientCert || c2.ClientAuth == tls.NoClientCert {
-		return nil
-	}
-
-	ccerts1, ccerts2 := cfg1.ClientCerts, cfg2.ClientCerts
-
-	if len(ccerts1) != len(ccerts2) {
-		return fmt.Errorf("number of client certs differs")
-	}
-
-	// The order of client CAs matters
-	for i, v := range ccerts1 {
-		if v != ccerts2[i] {
-			// Two hosts defined on the same listener are not compatible if they
-			// have ClientAuth enabled, because there's no guarantee beyond the
-			// hostname which config will be used (because SNI only has server name).
-			// To prevent clients from bypassing authentication, require that
-			// ClientAuth be configured in an unambiguous manner.
-			return fmt.Errorf("multiple hosts requiring client authentication ambiguously configured")
-		}
-	}
-
-	return nil
 }
 
 // Map of supported curves

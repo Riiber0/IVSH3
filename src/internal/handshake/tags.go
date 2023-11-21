@@ -49,10 +49,6 @@ const (
 	TagCFCW Tag = 'C' + 'F'<<8 + 'C'<<16 + 'W'<<24
 	// TagSFCW is the initial stream flow control receive window.
 	TagSFCW Tag = 'S' + 'F'<<8 + 'C'<<16 + 'W'<<24
-	// TagMPID is the maximum path ID
-	TagMPID Tag = 'M' + 'P'<<8 + 'I'<<16 + 'D'<<24
-	// TagFSOP are the FEC Scheme option
-	TagFSOP Tag = 'F' + 'S'<<8 + 'O'<<16 + 'P'<<24
 
 	// TagFHL2 forces head of line blocking.
 	// Chrome experiment (see https://codereview.chromium.org/2115033002)

@@ -12,31 +12,7 @@ import (
 	"github.com/lucas-clemente/quic-go/internal/protocol"
 	"github.com/lucas-clemente/quic-go/internal/utils"
 	"github.com/lucas-clemente/quic-go/internal/wire"
-	"github.com/lucas-clemente/quic-go/logger"
 )
-
-type streamI interface {
-	Stream
-
-	AddStreamFrame(*wire.StreamFrame) error
-	RegisterRemoteError(error, protocol.ByteCount) error
-	LenOfDataForWriting() protocol.ByteCount
-	GetDataForWriting(maxBytes protocol.ByteCount) []byte
-	GetWriteOffset() protocol.ByteCount
-	Finished() bool
-	Cancel(error)
-	ShouldSendFin() bool
-	SentFin()
-	// methods needed for flow control
-	GetWindowUpdate(force bool) protocol.ByteCount
-	UpdateSendWindow(protocol.ByteCount)
-	IsFlowControlBlocked() bool
-	GetSendWindowSize() protocol.ByteCount
-	// methods needed for statistics
-	AddBytesRetrans(n protocol.ByteCount)
-}
-
-const bufferingThreshold = 5000
 
 // A Stream assembles the data from StreamFrames and provides a super-convenient Read-Interface
 //
@@ -80,21 +56,10 @@ type stream struct {
 	writeChan      chan struct{}
 	writeDeadline  time.Time
 
-	flowController flowcontrol.StreamFlowController
-	version        protocol.VersionNumber
-
-	unreliable             bool
-	retransmissionDeadline time.Duration
-
-	replayBufferSize  uint64
-	bufferEnd         protocol.ByteCount
-	messageMode       bool
-	currentBufferSize *utils.AtomicUint64
-	finReceived       *utils.AtomicBool
+	flowControlManager flowcontrol.FlowControlManager
 }
 
 var _ Stream = &stream{}
-var _ streamI = &stream{}
 
 type deadlineError struct{}
 
@@ -108,44 +73,22 @@ var errDeadline net.Error = &deadlineError{}
 func newStream(StreamID protocol.StreamID,
 	onData func(),
 	onReset func(protocol.StreamID, protocol.ByteCount),
-	flowController flowcontrol.StreamFlowController,
-	version protocol.VersionNumber,
-) *stream {
-	currentBufferSize := &utils.AtomicUint64{}
-	currentBufferSize.Set(0)
-	finReceived := &utils.AtomicBool{}
-	finReceived.Set(false)
+	flowControlManager flowcontrol.FlowControlManager) *stream {
 	s := &stream{
-		onData:            onData,
-		onReset:           onReset,
-		streamID:          StreamID,
-		flowController:    flowController,
-		frameQueue:        newStreamFrameSorter(),
-		readChan:          make(chan struct{}, 1),
-		writeChan:         make(chan struct{}, 1),
-		version:           version,
-		currentBufferSize: currentBufferSize,
-		finReceived:       finReceived,
+		onData:             onData,
+		onReset:            onReset,
+		streamID:           StreamID,
+		flowControlManager: flowControlManager,
+		frameQueue:         newStreamFrameSorter(),
+		readChan:           make(chan struct{}, 1),
+		writeChan:          make(chan struct{}, 1),
 	}
 	s.ctx, s.ctxCancel = context.WithCancel(context.Background())
 	return s
 }
 
-// newStream creates a new Stream
-func newUnreliableStream(StreamID protocol.StreamID,
-	onData func(),
-	queueControlFrame func(protocol.StreamID, protocol.ByteCount),
-	flowControlManager flowcontrol.StreamFlowController,
-	version protocol.VersionNumber,
-) *stream {
-	s := newStream(StreamID, onData, queueControlFrame, flowControlManager, version)
-	s.SetUnreliable(true)
-	return s
-}
-
 // Read implements io.Reader. It is not thread safe!
 func (s *stream) Read(p []byte) (int, error) {
-	s.frameQueue.lastCallToRead = time.Now()
 	s.mutex.Lock()
 	err := s.err
 	s.mutex.Unlock()
@@ -157,24 +100,15 @@ func (s *stream) Read(p []byte) (int, error) {
 	}
 
 	bytesRead := 0
-	defer func() {
-		s.currentBufferSize.Decrement(uint64(bytesRead))
-	}()
 	for bytesRead < len(p) {
 		s.mutex.Lock()
-		var frame *wire.StreamFrame
-		if !s.finReceived.Get() && uint64(s.flowController.GetHighestReceived())-uint64(s.readOffset) < s.replayBufferSize {
-			frame = nil
-		} else {
-			frame = s.frameQueue.Head()
-		}
+		frame := s.frameQueue.Head()
 		if frame == nil && bytesRead > 0 {
 			err = s.err
 			s.mutex.Unlock()
 			return bytesRead, err
 		}
 
-		var bytesSkipped protocol.ByteCount // number of bytes skipped because of nonCON stream frames, that should be considered as read
 		var err error
 		for {
 			// Stop waiting on errors
@@ -190,47 +124,21 @@ func (s *stream) Read(p []byte) (int, error) {
 			}
 
 			if frame != nil {
-				// added by michelfra: this if below
-				if s.unreliable && frame.Offset > s.readOffset {
-					bytesSkipped += frame.Offset - s.readOffset
-					s.readOffset = frame.Offset
-				}
 				s.readPosInFrame = int(s.readOffset - frame.Offset)
 				break
 			}
 
 			s.mutex.Unlock()
 			if deadline.IsZero() {
-				// if the stream is not reliable and is there is a reliablity deadline, wake up when this deadline is over
-				if s.unreliable && s.frameQueue.reliabilityDeadline.Nanoseconds() != 0 {
-					select {
-					case <-s.readChan:
-					case <-time.After(s.frameQueue.lastCallToRead.Add(s.frameQueue.reliabilityDeadline).Sub(time.Now())):
-					}
-				} else {
-					<-s.readChan
-				}
+				<-s.readChan
 			} else {
-				// if the stream is not reliable and is there is a reliability deadline, wake up when this deadline is over
-				if s.unreliable && s.frameQueue.reliabilityDeadline.Nanoseconds() != 0 {
-					select {
-					case <-s.readChan:
-					case <-time.After(s.frameQueue.lastCallToRead.Add(s.frameQueue.reliabilityDeadline).Sub(time.Now())):
-					case <-time.After(deadline.Sub(time.Now())):
-					}
-				} else {
-					select {
-					case <-s.readChan:
-					case <-time.After(deadline.Sub(time.Now())):
-					}
+				select {
+				case <-s.readChan:
+				case <-time.After(deadline.Sub(time.Now())):
 				}
 			}
 			s.mutex.Lock()
-			if !s.finReceived.Get() && uint64(s.flowController.GetHighestReceived())-uint64(s.readOffset) < s.replayBufferSize {
-				frame = nil
-			} else {
-				frame = s.frameQueue.Head()
-			}
+			frame = s.frameQueue.Head()
 		}
 		s.mutex.Unlock()
 
@@ -247,25 +155,15 @@ func (s *stream) Read(p []byte) (int, error) {
 			return bytesRead, fmt.Errorf("BUG: readPosInFrame (%d) > frame.DataLen (%d) in stream.Read", s.readPosInFrame, frame.DataLen())
 		}
 		copy(p[bytesRead:], frame.Data[s.readPosInFrame:])
+
 		s.readPosInFrame += m
 		bytesRead += m
-
-		s.mutex.Lock()
 		s.readOffset += protocol.ByteCount(m)
+
 		// when a RST_STREAM was received, the was already informed about the final byteOffset for this stream
 		if !s.resetRemotely.Get() {
-			if s.replayBufferSize == 0 {
-				s.flowController.AddBytesRead(protocol.ByteCount(m))
-			} else {
-				oldBufferEnd := s.bufferEnd
-				newBufferEnd := uint64(s.readOffset + protocol.ByteCount(s.replayBufferSize))
-				s.bufferEnd = protocol.ByteCount(utils.MaxUint64(newBufferEnd, uint64(oldBufferEnd))) // the buffer size could have reduce, so be careful not to add the same bytes twice
-				bytesToPutInBuffer := uint64(s.getReceivedBytesBetween(oldBufferEnd, protocol.ByteCount(newBufferEnd)))
-				// add byteSkypped
-				s.flowController.AddBytesRead(protocol.ByteCount(bytesToPutInBuffer))
-			}
+			s.flowControlManager.AddBytesRead(s.streamID, protocol.ByteCount(m))
 		}
-		s.mutex.Unlock()
 		s.onData() // so that a possible WINDOW_UPDATE is sent
 
 		if s.readPosInFrame >= int(frame.DataLen()) {
@@ -276,8 +174,6 @@ func (s *stream) Read(p []byte) (int, error) {
 			if fin {
 				s.finishedReading.Set(true)
 				return bytesRead, io.EOF
-			} else if s.messageMode {
-				return bytesRead, nil
 			}
 		}
 	}
@@ -301,7 +197,6 @@ func (s *stream) Write(p []byte) (int, error) {
 
 	s.dataForWriting = make([]byte, len(p))
 	copy(s.dataForWriting, p)
-	//s.dataForWriting = append(s.dataForWriting, p...)
 	s.onData()
 
 	var err error
@@ -311,7 +206,7 @@ func (s *stream) Write(p []byte) (int, error) {
 			err = errDeadline
 			break
 		}
-		if s.dataForWriting == nil || len(s.dataForWriting) < bufferingThreshold || s.err != nil {
+		if s.dataForWriting == nil || s.err != nil {
 			break
 		}
 
@@ -336,11 +231,7 @@ func (s *stream) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func (s *stream) GetWriteOffset() protocol.ByteCount {
-	return s.writeOffset
-}
-
-func (s *stream) LenOfDataForWriting() protocol.ByteCount {
+func (s *stream) lenOfDataForWriting() protocol.ByteCount {
 	s.mutex.Lock()
 	var l protocol.ByteCount
 	if s.err == nil {
@@ -350,7 +241,7 @@ func (s *stream) LenOfDataForWriting() protocol.ByteCount {
 	return l
 }
 
-func (s *stream) GetDataForWriting(maxBytes protocol.ByteCount) []byte {
+func (s *stream) getDataForWriting(maxBytes protocol.ByteCount) []byte {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
@@ -358,31 +249,16 @@ func (s *stream) GetDataForWriting(maxBytes protocol.ByteCount) []byte {
 		return nil
 	}
 
-	// TODO(#657): Flow control for the crypto stream
-	if s.streamID != s.version.CryptoStreamID() {
-		maxBytes = utils.MinByteCount(maxBytes, s.flowController.SendWindowSize())
-	}
-	if maxBytes == 0 {
-		return nil
-	}
-
 	var ret []byte
 	if protocol.ByteCount(len(s.dataForWriting)) > maxBytes {
-		if !s.messageMode {
-			ret = s.dataForWriting[:maxBytes]
-			s.dataForWriting = s.dataForWriting[maxBytes:]
-		}
+		ret = s.dataForWriting[:maxBytes]
+		s.dataForWriting = s.dataForWriting[maxBytes:]
 	} else {
 		ret = s.dataForWriting
 		s.dataForWriting = nil
-	}
-	if len(s.dataForWriting) < bufferingThreshold {
 		s.signalWrite()
 	}
-	if ret != nil {
-		s.writeOffset += protocol.ByteCount(len(ret))
-		s.flowController.AddBytesSent(protocol.ByteCount(len(ret)))
-	}
+	s.writeOffset += protocol.ByteCount(len(ret))
 	return ret
 }
 
@@ -401,44 +277,31 @@ func (s *stream) shouldSendReset() bool {
 	return (s.resetLocally.Get() || s.resetRemotely.Get()) && !s.finishedWriteAndSentFin()
 }
 
-func (s *stream) ShouldSendFin() bool {
+func (s *stream) shouldSendFin() bool {
 	s.mutex.Lock()
 	res := s.finishedWriting.Get() && !s.finSent.Get() && s.err == nil && s.dataForWriting == nil
 	s.mutex.Unlock()
 	return res
 }
 
-func (s *stream) SentFin() {
+func (s *stream) sentFin() {
 	s.finSent.Set(true)
 }
 
 // AddStreamFrame adds a new stream frame
 func (s *stream) AddStreamFrame(frame *wire.StreamFrame) error {
 	maxOffset := frame.Offset + frame.DataLen()
+	err := s.flowControlManager.UpdateHighestReceived(s.streamID, maxOffset)
+	if err != nil {
+		return err
+	}
+
 	s.mutex.Lock()
-	if err := s.flowController.UpdateHighestReceived(maxOffset, frame.FinBit); err != nil {
-		return err
-	}
-
 	defer s.mutex.Unlock()
-	if frame.FinBit {
-		s.finReceived.Set(true)
-	}
-	if err := s.frameQueue.Push(frame); err != nil && err != errDuplicateStreamData {
+	err = s.frameQueue.Push(frame)
+	if err != nil && err != errDuplicateStreamData {
 		return err
-	} else if err != errDuplicateStreamData {
-		if s.replayBufferSize > 0 {
-			bEnd := protocol.ByteCount(utils.MaxUint64(uint64(s.readOffset)+s.replayBufferSize, uint64(s.bufferEnd)))
-			if frame.Offset < bEnd {
-				//put this frame in buffer
-				bytesToPutInBuffer := utils.MinUint64(uint64(frame.DataLen()), uint64(bEnd-frame.Offset))
-				s.flowController.AddBytesRead(protocol.ByteCount(bytesToPutInBuffer))
-			}
-		}
-
-		logger.ExpLogInsertGapsInfo(s.streamID, s.frameQueue.gaps.Len())
 	}
-
 	s.signalRead()
 	return nil
 }
@@ -530,9 +393,9 @@ func (s *stream) Reset(err error) {
 }
 
 // resets the stream remotely
-func (s *stream) RegisterRemoteError(err error, offset protocol.ByteCount) error {
+func (s *stream) RegisterRemoteError(err error) {
 	if s.resetRemotely.Get() {
-		return nil
+		return
 	}
 	s.mutex.Lock()
 	s.resetRemotely.Set(true)
@@ -542,22 +405,18 @@ func (s *stream) RegisterRemoteError(err error, offset protocol.ByteCount) error
 		s.err = err
 		s.signalWrite()
 	}
-	if err := s.flowController.UpdateHighestReceived(offset, true); err != nil {
-		return err
-	}
 	if s.shouldSendReset() {
 		s.onReset(s.streamID, s.writeOffset)
 		s.rstSent.Set(true)
 	}
 	s.mutex.Unlock()
-	return nil
 }
 
 func (s *stream) finishedWriteAndSentFin() bool {
 	return s.finishedWriting.Get() && s.finSent.Get()
 }
 
-func (s *stream) Finished() bool {
+func (s *stream) finished() bool {
 	return s.cancelled.Get() ||
 		(s.finishedReading.Get() && s.finishedWriteAndSentFin()) ||
 		(s.resetRemotely.Get() && s.rstSent.Get()) ||
@@ -573,103 +432,10 @@ func (s *stream) StreamID() protocol.StreamID {
 	return s.streamID
 }
 
-func (s *stream) GetBytesSent() protocol.ByteCount {
-	return s.flowController.GetBytesSent()
+func (s *stream) GetBytesSent() (protocol.ByteCount, error) {
+	return s.flowControlManager.GetBytesSent(s.streamID)
 }
 
-func (s *stream) AddBytesRetrans(n protocol.ByteCount) {
-	s.flowController.AddBytesRetrans(n)
-}
-
-func (s *stream) GetBytesRetrans() protocol.ByteCount {
-	return s.flowController.GetBytesRetrans()
-}
-
-func (s *stream) UpdateSendWindow(n protocol.ByteCount) {
-	s.flowController.UpdateSendWindow(n)
-}
-
-func (s *stream) IsFlowControlBlocked() bool {
-	if s.messageMode && s.LenOfDataForWriting() > s.flowController.SendWindowSize() {
-		if s.LenOfDataForWriting() > s.flowController.SendWindowSize() {
-		}
-		return s.LenOfDataForWriting() > s.flowController.SendWindowSize()
-	}
-	return s.flowController.IsBlocked()
-}
-
-func (s *stream) GetSendWindowSize() protocol.ByteCount {
-	return s.flowController.SendWindowSize()
-}
-
-func (s *stream) GetWindowUpdate(force bool) protocol.ByteCount {
-	return s.flowController.GetWindowUpdate(force)
-}
-
-func (s *stream) SetRetransmissionDeadline(val time.Duration) {
-	s.retransmissionDeadline = val
-}
-
-func (s *stream) GetRetransmissionDeadLine() time.Duration {
-	return s.retransmissionDeadline
-}
-
-func (s *stream) SetReliabilityDeadline(val time.Duration) {
-	s.frameQueue.reliabilityDeadline = val
-}
-
-func (s *stream) GetReliabilityDeadline() time.Duration {
-	return s.frameQueue.reliabilityDeadline
-}
-
-func (s *stream) IsUnreliable() bool {
-	return s.unreliable && s.frameQueue.unreliable
-}
-
-func (s *stream) SetUnreliable(val bool) {
-	s.unreliable = val
-	s.frameQueue.unreliable = val
-}
-
-func (s *stream) SetMessageMode(val bool) {
-	s.messageMode = val
-}
-
-func (s *stream) GetMessageMode() bool {
-	return s.messageMode
-}
-
-func (s *stream) GetReplayBufferSize() uint64 {
-	s.mutex.Lock()
-	retVal := s.replayBufferSize
-	s.mutex.Unlock()
-	return retVal
-}
-
-func (s *stream) SetReplayBufferSize(size uint64) {
-	s.mutex.Lock()
-	s.replayBufferSize = size
-	if s.readOffset+protocol.ByteCount(size) > s.bufferEnd {
-		s.flowController.AddBytesRead(s.getReceivedBytesBetween(s.bufferEnd, s.readOffset+protocol.ByteCount(size)))
-		s.bufferEnd = s.readOffset + protocol.ByteCount(size)
-	}
-	s.signalRead()
-	s.mutex.Unlock()
-}
-func (s *stream) getReceivedBytesBetween(begin, end protocol.ByteCount) protocol.ByteCount {
-	if end <= begin {
-		return 0
-	}
-	currentIndex := begin
-	var nBytes protocol.ByteCount
-	for currentGap := s.frameQueue.gaps.Front(); currentGap != nil; currentGap = currentGap.Next() {
-		if currentGap.Value.Start > currentIndex {
-			nBytes += protocol.ByteCount(utils.MinUint64(uint64(currentGap.Value.Start-currentIndex), uint64(end-currentIndex)))
-		}
-		if currentGap.Value.End <= end {
-			break
-		}
-		currentIndex = currentGap.Value.End
-	}
-	return nBytes
+func (s *stream) GetBytesRetrans() (protocol.ByteCount, error) {
+	return s.flowControlManager.GetBytesRetrans(s.streamID)
 }

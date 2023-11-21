@@ -29,16 +29,16 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/caddyserver/caddy"
-	"github.com/caddyserver/caddy/caddyfile"
-	"github.com/caddyserver/caddy/caddytls"
-	"github.com/caddyserver/caddy/telemetry"
 	"github.com/google/uuid"
 	"github.com/klauspost/cpuid"
+	"github.com/mholt/caddy"
+	"github.com/mholt/caddy/caddyfile"
+	"github.com/mholt/caddy/caddytls"
+	"github.com/mholt/caddy/telemetry"
 	"github.com/mholt/certmagic"
 	lumberjack "gopkg.in/natefinch/lumberjack.v2"
 
-	_ "github.com/caddyserver/caddy/caddyhttp" // plug in the HTTP server type
+	_ "github.com/mholt/caddy/caddyhttp" // plug in the HTTP server type
 	// This is where other plugins get plugged in (imported)
 )
 
@@ -60,7 +60,6 @@ func init() {
 	flag.StringVar(&certmagic.Default.Email, "email", "", "Default ACME CA account email address")
 	flag.DurationVar(&certmagic.HTTPTimeout, "catimeout", certmagic.HTTPTimeout, "Default ACME CA HTTP timeout")
 	flag.StringVar(&logfile, "log", "", "Process log file")
-	flag.BoolVar(&logTimestamps, "log-timestamps", true, "Enable timestamps for the process log")
 	flag.IntVar(&logRollMB, "log-roll-mb", 100, "Roll process log when it reaches this many megabytes (0 to disable rolling)")
 	flag.BoolVar(&logRollCompress, "log-roll-compress", true, "Gzip-compress rolled process log files")
 	flag.StringVar(&caddy.PidFile, "pidfile", "", "Path to write pid file")
@@ -84,13 +83,7 @@ func Run() {
 
 	caddy.AppName = appName
 	caddy.AppVersion = module.Version
-	caddy.OnProcessExit = append(caddy.OnProcessExit, certmagic.CleanUpOwnLocks)
 	certmagic.UserAgent = appName + "/" + cleanModVersion
-
-	if !logTimestamps {
-		// Disable timestamps for logging
-		log.SetFlags(0)
-	}
 
 	// Set up process log before anything bad happens
 	switch logfile {
@@ -196,9 +189,6 @@ func Run() {
 		os.Exit(0)
 	}
 
-	// Log Caddy version before start
-	log.Printf("[INFO] Caddy version: %s", module.Version)
-
 	// Start your engines
 	instance, err := caddy.Start(caddyfileinput)
 	if err != nil {
@@ -300,7 +290,7 @@ func getBuildModule() *debug.Module {
 		// preserves caddy a read-only dependency
 		// TODO: track related Go issue: https://github.com/golang/go/issues/29228
 		for _, mod := range bi.Deps {
-			if mod.Path == "github.com/caddyserver/caddy" {
+			if mod.Path == "github.com/mholt/caddy" {
 				return mod
 			}
 		}
@@ -596,7 +586,6 @@ var (
 	envFile         string
 	fromJSON        bool
 	logfile         string
-	logTimestamps   bool
 	logRollMB       int
 	logRollCompress bool
 	revoke          string

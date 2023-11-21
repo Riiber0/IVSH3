@@ -1,18 +1,6 @@
-# MPQUIC-FEC
-This repositery contains a modified version of `MPQUIC` adding the Forward Erasure Correction (FEC) extension.
-
-To compile this correctly, you will need to checkout the dependencies to an older version, as they made backward-incompatible changes. To do so, you can use the following commands :
-
-    go get -d ./...
-    pushd ~/go/src/github.com/bifurcation/mint && git checkout 64af8ab && popd
-    pushd ~/go/src/github.com/vishvananda/netlink && git checkout ad19ca1 && popd
-    
-You can compile an example HTTP 2.0 over QUIC client and servers by compiling `example/test_http/main.go` like the following :
-
-    go build -o quic-fec example/test_http/main.go
-
-
 # A QUIC implementation in pure Go
+
+**Please read https://multipath-quic.org/2017/12/09/artifacts-available.html to figure out how to setup the code.**
 
 <img src="docs/quic.png" width=303 height=124>
 
@@ -83,4 +71,4 @@ http.Client{
 
 ## Contributing
 
-We are always happy to welcome new contributors! We have a number of self-contained issues that are suitable for first-time contributors, they are tagged with [help wanted](https://github.com/lucas-clemente/quic-go/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22). If you have any questions, please feel free to reach out by opening an issue or leaving a comment.
+We are always happy to welcome new contributors! We have a number of self-contained issues that are suitable for first-time contributors, they are tagged with [want-help](https://github.com/lucas-clemente/quic-go/issues?q=is%3Aopen+is%3Aissue+label%3Awant-help). If you have any questions, please feel free to reach out by opening an issue or leaving a comment.

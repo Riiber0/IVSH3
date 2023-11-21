@@ -14,18 +14,17 @@ type stopWaitingManager struct {
 }
 
 func (s *stopWaitingManager) GetStopWaitingFrame(force bool) *wire.StopWaitingFrame {
-	if force {
-		if s.lastStopWaitingFrame == nil && s.largestLeastUnackedSent > 0 {
-			// This case is possible when no previous SWF were sent (lost first packet)
-			swf := &wire.StopWaitingFrame{
-				LeastUnacked: s.nextLeastUnacked,
-			}
-			s.lastStopWaitingFrame = swf
-		}
-		return s.lastStopWaitingFrame
-	}
-
 	if s.nextLeastUnacked <= s.largestLeastUnackedSent {
+		if force {
+			if s.lastStopWaitingFrame == nil && s.largestLeastUnackedSent > 0 {
+				// This case is possible when no previous SWF were sent (lost first packet)
+				swf := &wire.StopWaitingFrame{
+					LeastUnacked: s.nextLeastUnacked,
+				}
+				s.lastStopWaitingFrame = swf
+			}
+			return s.lastStopWaitingFrame
+		}
 		return nil
 	}
 
@@ -40,12 +39,6 @@ func (s *stopWaitingManager) GetStopWaitingFrame(force bool) *wire.StopWaitingFr
 func (s *stopWaitingManager) ReceivedAck(ack *wire.AckFrame) {
 	if ack.LargestAcked >= s.nextLeastUnacked {
 		s.nextLeastUnacked = ack.LargestAcked + 1
-	}
-}
-
-func (s *stopWaitingManager) ReceivedRecovered(rf *wire.RecoveredFrame) {
-	if rf.RecoveredRanges[0].Last >= s.nextLeastUnacked {
-		s.nextLeastUnacked = rf.RecoveredRanges[0].Last + 1
 	}
 }
 

@@ -7,5 +7,3 @@ type AckRange struct {
 	First protocol.PacketNumber
 	Last  protocol.PacketNumber
 }
-
-type RecoveredRange AckRange

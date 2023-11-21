@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/caddyserver/caddy"
 	"github.com/google/uuid"
+	"github.com/mholt/caddy"
 )
 
 func TestHook(t *testing.T) {

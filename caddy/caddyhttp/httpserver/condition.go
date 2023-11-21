@@ -20,7 +20,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/caddyserver/caddy"
+	"github.com/mholt/caddy"
 )
 
 // SetupIfMatcher parses `if` or `if_op` in the current dispenser block.

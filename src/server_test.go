@@ -5,10 +5,8 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
-	"github.com/lucas-clemente/quic-go/fec"
 	"net"
 	"reflect"
-	"sync"
 	"time"
 
 	"github.com/lucas-clemente/quic-go/internal/crypto"
@@ -23,24 +21,15 @@ import (
 )
 
 type mockSession struct {
-	connectionID        protocol.ConnectionID
-	packetCount         int
-	closed              bool
-	closeReason         error
-	closedRemote        bool
-	config              *Config
-	stopRunLoop         chan struct{} // run returns as soon as this channel receives a value
-	handshakeChan       chan handshakeEvent
-	handshakeComplete   chan error // for WaitUntilHandshakeComplete
-	remoteAddr          net.Addr
-	maxPathID           protocol.PathID
-	paths               map[protocol.PathID]*path
-	pathTimers          chan *path
-	perspective         protocol.Perspective
-	pathsLock           sync.RWMutex
-	pingSent            int
-	scheduledPathFrames int
-	streamFramer        *streamFramer
+	connectionID      protocol.ConnectionID
+	packetCount       int
+	closed            bool
+	closeReason       error
+	closedRemote      bool
+	stopRunLoop       chan struct{} // run returns as soon as this channel receives a value
+	handshakeChan     chan handshakeEvent
+	handshakeComplete chan error // for WaitUntilHandshakeComplete
+	remoteAddr        net.Addr
 }
 
 func (s *mockSession) handlePacket(*receivedPacket) {
@@ -72,52 +61,20 @@ func (s *mockSession) closeRemote(e error) {
 func (s *mockSession) OpenStream() (Stream, error) {
 	return &stream{streamID: 1337}, nil
 }
-func (s *mockSession) AcceptStream() (Stream, error)          { panic("not implemented") }
-func (s *mockSession) OpenStreamSync() (Stream, error)        { panic("not implemented") }
-func (s *mockSession) LocalAddr() net.Addr                    { panic("not implemented") }
-func (s *mockSession) RemoteAddr() net.Addr                   { return s.remoteAddr }
-func (*mockSession) Context() context.Context                 { panic("not implemented") }
-func (*mockSession) GetVersion() protocol.VersionNumber       { return protocol.VersionWhatever }
-func (s *mockSession) GetConfig() *Config                     { return s.config }
-func (s *mockSession) GetConnectionID() protocol.ConnectionID { return s.connectionID }
-func (*mockSession) GetCryptoSetup() handshake.CryptoSetup    { return nil }
-func (s *mockSession) GetMaxPathID() protocol.PathID          { return s.maxPathID }
-func (*mockSession) GetPacker() *packetPacker                 { panic("not implemented") }
-func (*mockSession) GetPeerBlocked() bool                     { panic("not implemented") }
-func (s *mockSession) GetPerspective() protocol.Perspective   { return s.perspective }
-func (s *mockSession) GetStreamFramer() *streamFramer         { return s.streamFramer }
-func (*mockSession) GetUnpacker() unpacker                    { panic("not implemented") }
-func (*mockSession) IsHandshakeComplete() bool                { panic("not implemented") }
-func (s *mockSession) PathTimersChan() chan *path             { return s.pathTimers }
-func (*mockSession) PathManager() *pathManager                { panic("not implemented") }
-func (s *mockSession) Paths() map[protocol.PathID]*path       { return s.paths }
-func (s *mockSession) PathsLock() *sync.RWMutex               { return &s.pathsLock }
-func (s *mockSession) SchedulePathsFrame()                    { s.scheduledPathFrames++ }
-func (s *mockSession) SendPing(pth *path) error               { s.pingSent++; return nil }
-func (*mockSession) SetPeerBlocked(pb bool)                   { panic("not implemented") }
-func (*mockSession) getWindowUpdates(force bool) []wire.Frame {
-	panic("not implemented")
-}
-func (*mockSession) sendPackedPacket(pp *packedPacket, pth *path) error { panic("not implemented") }
-
-func (*mockSession) SetFECScheme(scheme fec.FECScheme)                  { panic("not implemented") }
-func (*mockSession) GetFECScheme() fec.FECScheme                        { panic("not implemented") }
-func (*mockSession) SetRedundancyController(c fec.RedundancyController) { panic("not implemented") }
-func (*mockSession) GetRedundancyController() fec.RedundancyController  { panic("not implemented") }
-func (*mockSession) GetFECFramer() *FECFramer                           { panic("not implemented") }
-func (*mockSession) GetFECFrameworkReceiver() *FECFrameworkReceiver     { panic("not implemented") }
-func (*mockSession) GetFECFrameworkConvolutionalReceiver() *FECFrameworkReceiverConvolutional {
-	panic("not implemented")
-}
-func (*mockSession) GetFECFrameworkSender() *FECFrameworkSender { panic("not implemented") }
+func (s *mockSession) AcceptStream() (Stream, error)    { panic("not implemented") }
+func (s *mockSession) OpenStreamSync() (Stream, error)  { panic("not implemented") }
+func (s *mockSession) LocalAddr() net.Addr              { panic("not implemented") }
+func (s *mockSession) RemoteAddr() net.Addr             { return s.remoteAddr }
+func (*mockSession) Context() context.Context           { panic("not implemented") }
+func (*mockSession) GetVersion() protocol.VersionNumber { return protocol.VersionWhatever }
 
 var _ Session = &mockSession{}
 var _ NonFWSession = &mockSession{}
-var _ sessionI = &mockSession{}
 
 func newMockSession(
 	_ connection,
-	_ pconnManagerI,
+	_ *pconnManager,
+	_ bool,
 	_ protocol.VersionNumber,
 	connectionID protocol.ConnectionID,
 	_ *handshake.ServerConfig,
@@ -125,7 +82,6 @@ func newMockSession(
 	_ *Config,
 ) (packetHandler, <-chan handshakeEvent, error) {
 	s := mockSession{
-		config:            &Config{},
 		connectionID:      connectionID,
 		handshakeChan:     make(chan handshakeEvent),
 		handshakeComplete: make(chan error),
@@ -145,9 +101,7 @@ var _ = Describe("Server", func() {
 	BeforeEach(func() {
 		pconnMgr = &pconnManager{}
 		conn = &mockPacketConn{addr: &net.UDPAddr{}}
-		pconnMgr.setup(conn, nil, newMockNetWatcher)
-		// these two channels will block forever so it won't automatically add addresses
-
+		pconnMgr.setup(conn, nil)
 		config = &Config{Versions: protocol.SupportedVersions}
 	})
 
@@ -168,9 +122,9 @@ var _ = Describe("Server", func() {
 				errorChan:    make(chan struct{}),
 			}
 			b := &bytes.Buffer{}
-			utils.BigEndian.WriteUint32(b, uint32(protocol.SupportedVersions[0]))
-			firstPacket = []byte{0x09, 0x4c, 0xfa, 0x9f, 0x9b, 0x66, 0x86, 0x19, 0xf6}
-			firstPacket = append(append(firstPacket, b.Bytes()...), 0x01, 0x00)
+			utils.LittleEndian.WriteUint32(b, protocol.VersionNumberToTag(protocol.SupportedVersions[0]))
+			firstPacket = []byte{0x09, 0xf6, 0x19, 0x86, 0x66, 0x9b, 0x9f, 0xfa, 0x4c}
+			firstPacket = append(append(firstPacket, b.Bytes()...), 0x01)
 		})
 
 		It("returns the address", func() {
@@ -228,7 +182,7 @@ var _ = Describe("Server", func() {
 		It("assigns packets to existing sessions", func() {
 			err := serv.handlePacket(&receivedRawPacket{rcvPconn: nil, remoteAddr: nil, data: firstPacket, rcvTime: time.Now()})
 			Expect(err).ToNot(HaveOccurred())
-			err = serv.handlePacket(&receivedRawPacket{rcvPconn: nil, remoteAddr: nil, data: []byte{0x08, 0x4c, 0xfa, 0x9f, 0x9b, 0x66, 0x86, 0x19, 0xf6, 0x01, 0x00}, rcvTime: time.Now()})
+			err = serv.handlePacket(&receivedRawPacket{rcvPconn: nil, remoteAddr: nil, data: []byte{0x08, 0xf6, 0x19, 0x86, 0x66, 0x9b, 0x9f, 0xfa, 0x4c, 0x01}, rcvTime: time.Now()})
 			Expect(err).ToNot(HaveOccurred())
 			Expect(serv.sessions).To(HaveLen(1))
 			Expect(serv.sessions[connID].(*mockSession).connectionID).To(Equal(connID))
@@ -237,9 +191,8 @@ var _ = Describe("Server", func() {
 
 		It("closes and deletes sessions", func() {
 			serv.deleteClosedSessionsAfter = time.Second // make sure that the nil value for the closed session doesn't get deleted in this test
-			nullAEAD, err := crypto.NewNullAEAD(protocol.PerspectiveServer, connID, protocol.VersionWhatever)
-			Expect(err).ToNot(HaveOccurred())
-			err = serv.handlePacket(&receivedRawPacket{rcvPconn: nil, remoteAddr: nil, data: append(firstPacket, nullAEAD.Seal(nil, nil, 0, firstPacket)...), rcvTime: time.Now()})
+			nullAEAD := crypto.NewNullAEAD(protocol.PerspectiveServer, protocol.VersionWhatever)
+			err := serv.handlePacket(&receivedRawPacket{rcvPconn: nil, remoteAddr: nil, data: append(firstPacket, nullAEAD.Seal(nil, nil, 0, firstPacket)...), rcvTime: time.Now()})
 			Expect(err).ToNot(HaveOccurred())
 			Expect(serv.sessions).To(HaveLen(1))
 			Expect(serv.sessions[connID]).ToNot(BeNil())
@@ -252,9 +205,8 @@ var _ = Describe("Server", func() {
 
 		It("deletes nil session entries after a wait time", func() {
 			serv.deleteClosedSessionsAfter = 25 * time.Millisecond
-			nullAEAD, err := crypto.NewNullAEAD(protocol.PerspectiveServer, connID, protocol.VersionWhatever)
-			Expect(err).ToNot(HaveOccurred())
-			err = serv.handlePacket(&receivedRawPacket{rcvPconn: nil, remoteAddr: nil, data: append(firstPacket, nullAEAD.Seal(nil, nil, 0, firstPacket)...), rcvTime: time.Now()})
+			nullAEAD := crypto.NewNullAEAD(protocol.PerspectiveServer, protocol.VersionWhatever)
+			err := serv.handlePacket(&receivedRawPacket{rcvPconn: nil, remoteAddr: nil, data: append(firstPacket, nullAEAD.Seal(nil, nil, 0, firstPacket)...), rcvTime: time.Now()})
 			Expect(err).ToNot(HaveOccurred())
 			Expect(serv.sessions).To(HaveLen(1))
 			Expect(serv.sessions).To(HaveKey(connID))
@@ -269,7 +221,7 @@ var _ = Describe("Server", func() {
 		})
 
 		It("closes sessions and the connection when Close is called", func() {
-			session, _, _ := newMockSession(nil, pconnMgr, 0, 0, nil, nil, nil)
+			session, _, _ := newMockSession(nil, pconnMgr, false, 0, 0, nil, nil, nil)
 			serv.sessions[1] = session
 			err := serv.Close()
 			Expect(err).NotTo(HaveOccurred())
@@ -279,7 +231,7 @@ var _ = Describe("Server", func() {
 
 		It("ignores packets for closed sessions", func() {
 			serv.sessions[connID] = nil
-			err := serv.handlePacket(&receivedRawPacket{rcvPconn: nil, remoteAddr: nil, data: []byte{0x08, 0x4c, 0xfa, 0x9f, 0x9b, 0x66, 0x86, 0x19, 0xf6, 0x01, 0x00}, rcvTime: time.Now()})
+			err := serv.handlePacket(&receivedRawPacket{rcvPconn: nil, remoteAddr: nil, data: []byte{0x08, 0xf6, 0x19, 0x86, 0x66, 0x9b, 0x9f, 0xfa, 0x4c, 0x01}, rcvTime: time.Now()})
 			Expect(err).ToNot(HaveOccurred())
 			Expect(serv.sessions).To(HaveLen(1))
 			Expect(serv.sessions[connID]).To(BeNil())
@@ -319,14 +271,14 @@ var _ = Describe("Server", func() {
 		}, 0.5)
 
 		It("closes all sessions when encountering a connection error", func() {
-			session, _, _ := newMockSession(nil, pconnMgr, 0, 0, nil, nil, nil)
+			session, _, _ := newMockSession(nil, pconnMgr, false, 0, 0, nil, nil, nil)
 			serv.sessions[0x12345] = session
 			Expect(serv.sessions[0x12345].(*mockSession).closed).To(BeFalse())
 			testErr := errors.New("connection error")
 			conn.readErr = testErr
 			go serv.serve()
 			Eventually(func() Session { return serv.sessions[connID] }).Should(BeNil())
-			Eventually(func() bool { return serv.sessions[0x12345].(*mockSession).closed }).Should(BeTrue())
+			Eventually(func() bool { return session.(*mockSession).closed }).Should(BeTrue())
 			Expect(serv.Close()).To(Succeed())
 		})
 
@@ -336,9 +288,9 @@ var _ = Describe("Server", func() {
 			Expect(serv.sessions[connID].(*mockSession).packetCount).To(Equal(1))
 			b := &bytes.Buffer{}
 			// add an unsupported version
-			data := []byte{0x09, 0x4c, 0xfa, 0x9f, 0x9b, 0x66, 0x86, 0x19, 0xf6}
-			utils.BigEndian.WriteUint32(b, uint32(protocol.SupportedVersions[0]+1))
-			data = append(append(data, b.Bytes()...), 0x01, 0x00)
+			utils.LittleEndian.WriteUint32(b, protocol.VersionNumberToTag(protocol.SupportedVersions[0]+1))
+			data := []byte{0x09, 0xf6, 0x19, 0x86, 0x66, 0x9b, 0x9f, 0xfa, 0x4c}
+			data = append(append(data, b.Bytes()...), 0x01)
 			err = serv.handlePacket(&receivedRawPacket{rcvPconn: nil, remoteAddr: nil, data: data, rcvTime: time.Now()})
 			Expect(err).ToNot(HaveOccurred())
 			// if we didn't ignore the packet, the server would try to send a version negotation packet, which would make the test panic because it doesn't have a udpConn
@@ -381,13 +333,13 @@ var _ = Describe("Server", func() {
 
 		It("doesn't respond with a version negotiation packet if the first packet is too small", func() {
 			b := &bytes.Buffer{}
-			hdr := wire.Header{
+			hdr := wire.PublicHeader{
 				VersionFlag:     true,
 				ConnectionID:    0x1337,
 				PacketNumber:    1,
 				PacketNumberLen: protocol.PacketNumberLen2,
 			}
-			hdr.Write(b, protocol.PerspectiveClient, 13 /* not a valid QUIC version */)
+			hdr.Write(b, 13 /* not a valid QUIC version */, protocol.PerspectiveClient)
 			b.Write(bytes.Repeat([]byte{0}, protocol.ClientHelloMinimumSize-1)) // this packet is 1 byte too small
 			err := serv.handlePacket(&receivedRawPacket{rcvPconn: conn, remoteAddr: udpAddr, data: b.Bytes(), rcvTime: time.Now()})
 			Expect(err).To(MatchError("dropping small packet with unknown version"))
@@ -452,73 +404,40 @@ var _ = Describe("Server", func() {
 	It("setups and responds with version negotiation", func() {
 		config.Versions = []protocol.VersionNumber{99}
 		b := &bytes.Buffer{}
-		hdr := wire.Header{
+		hdr := wire.PublicHeader{
 			VersionFlag:     true,
 			ConnectionID:    0x1337,
 			PacketNumber:    1,
 			PacketNumberLen: protocol.PacketNumberLen2,
 		}
-		hdr.Write(b, protocol.PerspectiveClient, 13 /* not a valid QUIC version */)
+		hdr.Write(b, 13 /* not a valid QUIC version */, protocol.PerspectiveClient)
 		b.Write(bytes.Repeat([]byte{0}, protocol.ClientHelloMinimumSize)) // add a fake CHLO
 		conn.dataToRead = b.Bytes()
 		conn.dataReadFrom = udpAddr
 		ln, err := ListenImpl(conn, nil, config, pconnMgr)
 		Expect(err).ToNot(HaveOccurred())
 
-		done := make(chan struct{})
+		var returned bool
 		go func() {
 			ln.Accept()
-			close(done)
+			returned = true
 		}()
 
 		Eventually(func() int { return conn.dataWritten.Len() }).ShouldNot(BeZero())
 		Expect(conn.dataWrittenTo).To(Equal(udpAddr))
-		r := bytes.NewReader(conn.dataWritten.Bytes())
-		packet, err := wire.ParseHeaderSentByServer(r, protocol.VersionUnknown)
-		Expect(err).ToNot(HaveOccurred())
-		Expect(packet.VersionFlag).To(BeTrue())
-		Expect(packet.ConnectionID).To(Equal(protocol.ConnectionID(0x1337)))
-		Expect(r.Len()).To(BeZero())
-		Consistently(done).ShouldNot(BeClosed())
-	})
-
-	PIt("sends an IETF draft style Version Negotaion Packet, if the client sent a IETF draft style header", func() {
-		config.Versions = []protocol.VersionNumber{99}
-		b := &bytes.Buffer{}
-		hdr := wire.Header{
-			Type:         protocol.PacketTypeInitial,
-			IsLongHeader: true,
-			ConnectionID: 0x1337,
-			PacketNumber: 0x55,
-		}
-		hdr.Write(b, protocol.PerspectiveClient, protocol.VersionTLS)
-		b.Write(bytes.Repeat([]byte{0}, protocol.ClientHelloMinimumSize)) // add a fake CHLO
-		conn.dataToRead = b.Bytes()
-		conn.dataReadFrom = udpAddr
-		ln, err := ListenImpl(conn, nil, config, pconnMgr)
-		Expect(err).ToNot(HaveOccurred())
-
-		done := make(chan struct{})
-		go func() {
-			ln.Accept()
-			close(done)
-		}()
-
-		Eventually(func() int { return conn.dataWritten.Len() }).ShouldNot(BeZero())
-		Expect(conn.dataWrittenTo).To(Equal(udpAddr))
-		r := bytes.NewReader(conn.dataWritten.Bytes())
-		packet, err := wire.ParseHeaderSentByServer(r, protocol.VersionUnknown)
-		Expect(err).ToNot(HaveOccurred())
-		Expect(packet.Type).To(Equal(protocol.PacketTypeVersionNegotiation))
-		Expect(packet.ConnectionID).To(Equal(protocol.ConnectionID(0x1337)))
-		Expect(packet.PacketNumber).To(Equal(protocol.PacketNumber(0x55)))
-		Expect(r.Len()).To(BeZero())
-		Consistently(done).ShouldNot(BeClosed())
+		b = &bytes.Buffer{}
+		utils.LittleEndian.WriteUint32(b, protocol.VersionNumberToTag(99))
+		expected := append(
+			[]byte{0x9, 0x37, 0x13, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0},
+			b.Bytes()...,
+		)
+		Expect(conn.dataWritten.Bytes()).To(Equal(expected))
+		Consistently(func() bool { return returned }).Should(BeFalse())
 	})
 
 	It("sends a PublicReset for new connections that don't have the VersionFlag set", func() {
 		conn.dataReadFrom = udpAddr
-		conn.dataToRead = []byte{0x08, 0x4c, 0xfa, 0x9f, 0x9b, 0x66, 0x86, 0x19, 0xf6, 0x01, 0x00}
+		conn.dataToRead = []byte{0x08, 0xf6, 0x19, 0x86, 0x66, 0x9b, 0x9f, 0xfa, 0x4c, 0x01}
 		ln, err := ListenImpl(conn, nil, config, pconnMgr)
 		Expect(err).ToNot(HaveOccurred())
 		go func() {

@@ -1,14 +1,12 @@
 package congestion
 
 import (
-	"github.com/lucas-clemente/quic-go/internal/protocol"
 	"time"
 
 	"github.com/lucas-clemente/quic-go/internal/utils"
 )
 
 const (
-	// Note: This constant is also defined in the ackhandler package.
 	initialRTTus          = 100 * 1000
 	rttAlpha      float32 = 0.125
 	oneMinusAlpha float32 = (1 - rttAlpha)
@@ -39,7 +37,6 @@ type RTTStats struct {
 	recentMinRTT     rttSample
 	halfWindowRTT    rttSample
 	quarterWindowRTT rttSample
-	Windows          []map[uint64]protocol.ByteCount
 }
 
 // NewRTTStats makes a properly initialized RTTStats object

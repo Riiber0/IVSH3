@@ -25,7 +25,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/caddyserver/caddy/caddyhttp/httpserver"
+	"github.com/mholt/caddy/caddyhttp/httpserver"
 )
 
 // Result is the result of a rewrite
@@ -95,15 +95,9 @@ func (s *SimpleRule) Match(r *http.Request) bool {
 
 // Rewrite rewrites the internal location of the current request.
 func (s *SimpleRule) Rewrite(fs http.FileSystem, r *http.Request) Result {
-	matches := regexpMatches(s.Regexp, "/", r.URL.Path)
-
-	replacer := newReplacer(r)
-	for i := 1; i < len(matches); i++ {
-		replacer.Set(fmt.Sprint(i), matches[i])
-	}
 
 	// attempt rewrite
-	return To(fs, r, s.To, replacer)
+	return To(fs, r, s.To, newReplacer(r))
 }
 
 // ComplexRule is a rewrite rule based on a regular expression
@@ -204,7 +198,16 @@ func (r ComplexRule) Rewrite(fs http.FileSystem, req *http.Request) (re Result) 
 		default:
 			// set regexp match variables {1}, {2} ...
 
+			// url escaped values of ? and #.
+			q, f := url.QueryEscape("?"), url.QueryEscape("#")
+
 			for i := 1; i < len(matches); i++ {
+				// Special case of unescaped # and ? by stdlib regexp.
+				// Reverse the unescape.
+				if strings.ContainsAny(matches[i], "?#") {
+					matches[i] = strings.NewReplacer("?", q, "#", f).Replace(matches[i])
+				}
+
 				replacer.Set(fmt.Sprint(i), matches[i])
 			}
 		}
@@ -243,8 +246,6 @@ func (r ComplexRule) matchExt(rPath string) bool {
 	return !mustUse
 }
 
-var escaper = strings.NewReplacer("?", url.QueryEscape("?"), "#", url.QueryEscape("#"))
-
 func regexpMatches(regexp *regexp.Regexp, base, rPath string) []string {
 	if regexp != nil {
 		// include trailing slash in regexp if present
@@ -252,19 +253,7 @@ func regexpMatches(regexp *regexp.Regexp, base, rPath string) []string {
 		if strings.HasSuffix(base, "/") {
 			start--
 		}
-
-		matches := regexp.FindStringSubmatch(rPath[start:])
-
-		// When processing a rewrite rule, the matching is done with an unescaped
-		// version of the old path. However, when such a match contains a ? or #
-		// character, the match cannot be used verbatim in the "to" URL because
-		// there it would be interpreted as query/fragment marker, so we re-escape
-		// those characters:
-		for i := 1; i < len(matches); i++ {
-			matches[i] = escaper.Replace(matches[i])
-		}
-
-		return matches
+		return regexp.FindStringSubmatch(rPath[start:])
 	}
 	return nil
 }

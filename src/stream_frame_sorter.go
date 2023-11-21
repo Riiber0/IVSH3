@@ -6,19 +6,12 @@ import (
 	"github.com/lucas-clemente/quic-go/internal/protocol"
 	"github.com/lucas-clemente/quic-go/internal/utils"
 	"github.com/lucas-clemente/quic-go/internal/wire"
-	"time"
 )
 
 type streamFrameSorter struct {
 	queuedFrames map[protocol.ByteCount]*wire.StreamFrame
 	readPosition protocol.ByteCount
 	gaps         *utils.ByteIntervalList
-
-	unreliable bool
-	// amount of time a reader is ok to wait before skipping data if the next data are not present
-	// if set to zero, it means that the reader does not want to wait at all
-	reliabilityDeadline time.Duration
-	lastCallToRead      time.Time
 }
 
 var (
@@ -136,7 +129,7 @@ func (s *streamFrameSorter) Push(frame *wire.StreamFrame) error {
 		}
 	}
 
-	if !s.unreliable && s.gaps.Len() > protocol.MaxStreamFrameSorterGaps {
+	if s.gaps.Len() > protocol.MaxStreamFrameSorterGaps {
 		return errTooManyGapsInReceivedStreamData
 	}
 
@@ -163,29 +156,6 @@ func (s *streamFrameSorter) Head() *wire.StreamFrame {
 	frame, ok := s.queuedFrames[s.readPosition]
 	if ok {
 		return frame
-	} else if !protocol.DEBUG_RETRANSMIT_UNRELIABLE && s.unreliable && time.Now().After(s.lastCallToRead.Add(s.reliabilityDeadline)) {
-		// read next frame if it has been received
-		for gap := s.gaps.Front(); gap != nil; gap = gap.Next() {
-			frame := s.queuedFrames[gap.Value.End]
-			if frame == nil {
-				return nil
-			}
-			s.readPosition = frame.Offset
-			// there is no gap anymore as we just move forward
-			s.gaps.Remove(gap)
-			return frame
-		}
-
-		return nil
-
 	}
 	return nil
-}
-
-func (s *streamFrameSorter) Size() int {
-	return len(s.queuedFrames)
-}
-
-func (s *streamFrameSorter) GapsCount() int {
-	return s.gaps.Len()
 }

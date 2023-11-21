@@ -4,32 +4,38 @@ import (
 	"bytes"
 
 	"github.com/lucas-clemente/quic-go/internal/protocol"
+	"github.com/lucas-clemente/quic-go/internal/utils"
 )
 
-// A BlockedFrame is a BLOCKED frame
-type BlockedFrame struct{}
-
-// ParseBlockedFrame parses a BLOCKED frame
-func ParseBlockedFrame(r *bytes.Reader, version protocol.VersionNumber) (*BlockedFrame, error) {
-	if _, err := r.ReadByte(); err != nil {
-		return nil, err
-	}
-	return &BlockedFrame{}, nil
+// A BlockedFrame in QUIC
+type BlockedFrame struct {
+	StreamID protocol.StreamID
 }
 
+//Write writes a BlockedFrame frame
 func (f *BlockedFrame) Write(b *bytes.Buffer, version protocol.VersionNumber) error {
-	if !version.UsesMaxDataFrame() {
-		return (&blockedFrameLegacy{}).Write(b, version)
-	}
-	typeByte := uint8(0x08)
-	b.WriteByte(typeByte)
+	b.WriteByte(0x05)
+	utils.GetByteOrder(version).WriteUint32(b, uint32(f.StreamID))
 	return nil
 }
 
 // MinLength of a written frame
 func (f *BlockedFrame) MinLength(version protocol.VersionNumber) (protocol.ByteCount, error) {
-	if !version.UsesMaxDataFrame() { // writing this frame would result in a legacy BLOCKED being written, which is longer
-		return 1 + 4, nil
+	return 1 + 4, nil
+}
+
+// ParseBlockedFrame parses a BLOCKED frame
+func ParseBlockedFrame(r *bytes.Reader, version protocol.VersionNumber) (*BlockedFrame, error) {
+	frame := &BlockedFrame{}
+
+	// read the TypeByte
+	if _, err := r.ReadByte(); err != nil {
+		return nil, err
 	}
-	return 1, nil
+	sid, err := utils.GetByteOrder(version).ReadUint32(r)
+	if err != nil {
+		return nil, err
+	}
+	frame.StreamID = protocol.StreamID(sid)
+	return frame, nil
 }

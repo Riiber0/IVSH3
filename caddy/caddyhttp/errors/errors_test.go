@@ -26,7 +26,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/caddyserver/caddy/caddyhttp/httpserver"
+	"github.com/mholt/caddy/caddyhttp/httpserver"
 )
 
 func TestErrors(t *testing.T) {
@@ -153,7 +153,7 @@ func TestVisibleErrorWithPanic(t *testing.T) {
 
 	body := rec.Body.String()
 
-	if !strings.Contains(body, "[PANIC /]") {
+	if !strings.Contains(body, "[PANIC /] caddyhttp/errors/errors_test.go") {
 		t.Errorf("Expected response body to contain error log line, but it didn't:\n%s", body)
 	}
 	if !strings.Contains(body, panicMsg) {

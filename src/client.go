@@ -52,12 +52,12 @@ func DialAddr(addr string, tlsConf *tls.Config, config *Config) (Session, error)
 		return nil, err
 	}
 	// Create the pconnManager here. It will be used to manage UDP connections
-	pconnMgr := &pconnManager{perspective: protocol.PerspectiveClient, config: config}
-	err = pconnMgr.setup(nil, nil, newNetWatcherLinux)
+	pconnMgr := &pconnManager{perspective: protocol.PerspectiveClient}
+	err = pconnMgr.setup(nil, nil)
 	if err != nil {
 		return nil, err
 	}
-	return Dial(pconnMgr.pconns[0], udpAddr, addr, tlsConf, config, pconnMgr)
+	return Dial(pconnMgr.pconnAny, udpAddr, addr, tlsConf, config, pconnMgr)
 }
 
 // DialAddrNonFWSecure establishes a new QUIC connection to a server.
@@ -72,12 +72,12 @@ func DialAddrNonFWSecure(
 		return nil, err
 	}
 	// Create the pconnManager here. It will be used to manage UDP connections
-	pconnMgr := &pconnManager{perspective: protocol.PerspectiveClient, config: config}
-	err = pconnMgr.setup(nil, nil, newNetWatcherLinux)
+	pconnMgr := &pconnManager{perspective: protocol.PerspectiveClient}
+	err = pconnMgr.setup(nil, nil)
 	if err != nil {
 		return nil, err
 	}
-	return DialNonFWSecure(pconnMgr.pconns[0], udpAddr, addr, tlsConf, config, pconnMgr)
+	return DialNonFWSecure(pconnMgr.pconnAny, udpAddr, addr, tlsConf, config, pconnMgr)
 }
 
 // DialNonFWSecure establishes a new non-forward-secure QUIC connection to a server using a net.PacketConn.
@@ -110,8 +110,8 @@ func DialNonFWSecure(
 	var pconnMgr *pconnManager
 
 	if pconnMgrArg == nil {
-		pconnMgr = &pconnManager{perspective: protocol.PerspectiveClient, config: config}
-		err := pconnMgr.setup(pconn, nil, newNetWatcherLinux)
+		pconnMgr = &pconnManager{perspective: protocol.PerspectiveClient}
+		err := pconnMgr.setup(pconn, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -130,7 +130,7 @@ func DialNonFWSecure(
 		versionNegotiationChan: make(chan struct{}),
 	}
 	// It's the responsibility of the client to give a proper connection
-	conn := &conn{pconn: c.pconnMgr.pconns[0], currentAddr: remoteAddr}
+	conn := &conn{pconn: c.pconnMgr.pconnAny, currentAddr: remoteAddr}
 
 	utils.Infof("Starting new connection to %s (%s -> %s), connectionID %x, version %s", hostname, conn.LocalAddr().String(), conn.RemoteAddr().String(), c.connectionID, c.version)
 
@@ -189,45 +189,22 @@ func populateClientConfig(config *Config) *Config {
 		maxReceiveConnectionFlowControlWindow = protocol.DefaultMaxReceiveConnectionFlowControlWindowClient
 	}
 
-	if config.SchedulingSchemeName != "" {
-		config.SchedulingScheme = protocol.ParseSchedulingScheme(config.SchedulingSchemeName)
-	} else if config.SchedulingScheme == 0 {
-		config.SchedulingScheme = protocol.SchedRR
-	}
-
-	if config.CongestionControlName != "" {
-		config.CongestionControl = protocol.ParseCongestionControl(config.CongestionControlName)
-	} else if config.CongestionControl == 0 {
-		config.CongestionControl = protocol.CongestionControlOlia
-	}
-
 	return &Config{
 		Versions:                              versions,
 		HandshakeTimeout:                      handshakeTimeout,
 		IdleTimeout:                           idleTimeout,
-		RequestConnectionIDOmission:           config.RequestConnectionIDOmission,
+		RequestConnectionIDTruncation:         config.RequestConnectionIDTruncation,
 		MaxReceiveStreamFlowControlWindow:     maxReceiveStreamFlowControlWindow,
 		MaxReceiveConnectionFlowControlWindow: maxReceiveConnectionFlowControlWindow,
-		KeepAlive:                             config.KeepAlive,
-		CacheHandshake:                        config.CacheHandshake,
-		MaxPathID:                             config.MaxPathID,
-		MultipathService:                      config.MultipathService,
-		NotifyID:                              config.NotifyID,
-		FECScheme:                             config.FECScheme,
-		RedundancyController:                  config.RedundancyController,
-		DisableFECRecoveredFrames:             config.DisableFECRecoveredFrames,
-		ProtectReliableStreamFrames:           config.ProtectReliableStreamFrames,
-		UseFastRetransmit:                     config.UseFastRetransmit,
-		OnlySendFECWhenApplicationLimited:     config.OnlySendFECWhenApplicationLimited,
-		SchedulingScheme:                      config.SchedulingScheme,
-		CongestionControl:                     config.CongestionControl,
-		ForceSendFECOnIdlePath:                config.ForceSendFECOnIdlePath,
+		KeepAlive:      config.KeepAlive,
+		CacheHandshake: config.CacheHandshake,
+		CreatePaths:    config.CreatePaths,
 	}
 }
 
 // establishSecureConnection returns as soon as the connection is secure (as opposed to forward-secure)
 func (c *client) establishSecureConnection(conn connection) error {
-	if err := c.createNewSession(c.version, nil, conn); err != nil {
+	if err := c.createNewSession(nil, conn); err != nil {
 		return err
 	}
 	go c.listen()
@@ -243,8 +220,7 @@ func (c *client) establishSecureConnection(conn connection) error {
 		}
 		close(errorChan)
 		utils.Infof("Connection %x closed.", c.connectionID)
-		close(c.pconnMgr.closeConns)
-		<-c.pconnMgr.closed
+		c.pconnMgr.closePconns()
 		select {
 		case c.closeListen <- runErr:
 			// It's possible to have the client having closed its run loop before...
@@ -312,18 +288,18 @@ func (c *client) handlePacket(rcvRawPacket *receivedRawPacket) {
 	}
 
 	r := bytes.NewReader(packet)
-	hdr, err := wire.ParseHeaderSentByServer(r, c.version)
+	hdr, err := wire.ParsePublicHeader(r, protocol.PerspectiveServer, c.version)
 	if err != nil {
 		utils.Errorf("error parsing packet from %s: %s", remoteAddr.String(), err.Error())
-		// drop this packet if we can't parse the header
+		// drop this packet if we can't parse the Public Header
 		return
 	}
 	// reject packets with truncated connection id if we didn't request truncation
-	if hdr.OmitConnectionID && !c.config.RequestConnectionIDOmission {
+	if hdr.TruncateConnectionID && !c.config.RequestConnectionIDTruncation {
 		return
 	}
 	// reject packets with the wrong connection ID
-	if !hdr.OmitConnectionID && hdr.ConnectionID != c.connectionID {
+	if !hdr.TruncateConnectionID && hdr.ConnectionID != c.connectionID {
 		return
 	}
 	hdr.Raw = packet[:len(packet)-r.Len()]
@@ -341,7 +317,7 @@ func (c *client) handlePacket(rcvRawPacket *receivedRawPacket) {
 		}
 		pr, err := wire.ParsePublicReset(r)
 		if err != nil {
-			utils.Infof("Received a Public Reset. An error occurred parsing the packet: %s", err)
+			utils.Infof("Received a Public Reset for connection %x. An error occurred parsing the packet.")
 			return
 		}
 		utils.Infof("Received Public Reset, rejected packet number: %#x.", pr.RejectedPacketNumber)
@@ -349,39 +325,36 @@ func (c *client) handlePacket(rcvRawPacket *receivedRawPacket) {
 		return
 	}
 
-	isVersionNegotiationPacket := hdr.VersionFlag /* gQUIC Version Negotiation Packet */ || hdr.Type == protocol.PacketTypeVersionNegotiation /* IETF draft style Version Negotiation Packet */
+	// ignore delayed / duplicated version negotiation packets
+	if (c.receivedVersionNegotiationPacket || c.versionNegotiated) && hdr.VersionFlag {
+		return
+	}
 
-	// handle Version Negotiation Packets
-	if isVersionNegotiationPacket {
-		// ignore delayed / duplicated version negotiation packets
-		if c.receivedVersionNegotiationPacket || c.versionNegotiated {
-			return
-		}
+	// this is the first packet after the client sent a packet with the VersionFlag set
+	// if the server doesn't send a version negotiation packet, it supports the suggested version
+	if !hdr.VersionFlag && !c.versionNegotiated {
+		c.versionNegotiated = true
+		close(c.versionNegotiationChan)
+	}
 
+	if hdr.VersionFlag {
 		// version negotiation packets have no payload
-		if err := c.handleVersionNegotiationPacket(hdr, remoteAddr); err != nil {
+		if err := c.handlePacketWithVersionFlag(hdr, remoteAddr); err != nil {
 			c.session.Close(err)
 		}
 		return
 	}
 
-	// this is the first packet we are receiving
-	// since it is not a Version Negotiation Packet, this means the server supports the suggested version
-	if !c.versionNegotiated {
-		c.versionNegotiated = true
-		close(c.versionNegotiationChan)
-	}
-
 	c.session.handlePacket(&receivedPacket{
-		remoteAddr: remoteAddr,
-		header:     hdr,
-		data:       packet[len(packet)-r.Len():],
-		rcvTime:    rcvTime,
-		rcvPconn:   pconn,
+		remoteAddr:   remoteAddr,
+		publicHeader: hdr,
+		data:         packet[len(packet)-r.Len():],
+		rcvTime:      rcvTime,
+		rcvPconn:     pconn,
 	})
 }
 
-func (c *client) handleVersionNegotiationPacket(hdr *wire.Header, remoteAddr net.Addr) error {
+func (c *client) handlePacketWithVersionFlag(hdr *wire.PublicHeader, remoteAddr net.Addr) error {
 	for _, v := range hdr.SupportedVersions {
 		if v == c.version {
 			// the version negotiation packet contains the version that we offered
@@ -393,13 +366,12 @@ func (c *client) handleVersionNegotiationPacket(hdr *wire.Header, remoteAddr net
 
 	c.receivedVersionNegotiationPacket = true
 
-	newVersion, ok := protocol.ChooseSupportedVersion(c.config.Versions, hdr.SupportedVersions)
-	if !ok {
+	newVersion := protocol.ChooseSupportedVersion(c.config.Versions, hdr.SupportedVersions)
+	if newVersion == protocol.VersionUnsupported {
 		return qerr.InvalidVersion
 	}
 
 	// switch to negotiated version
-	initialVersion := c.version
 	c.version = newVersion
 	var err error
 	c.connectionID, err = utils.GenerateConnectionID()
@@ -413,22 +385,21 @@ func (c *client) handleVersionNegotiationPacket(hdr *wire.Header, remoteAddr net
 	oldSession := c.session
 	defer oldSession.Close(errCloseSessionForNewVersion)
 	// It's the responsibility of the client to give a proper connection
-	conn := &conn{pconn: c.pconnMgr.pconns[0], currentAddr: remoteAddr}
-	return c.createNewSession(initialVersion, hdr.SupportedVersions, conn)
+	conn := &conn{pconn: c.pconnMgr.pconnAny, currentAddr: remoteAddr}
+	return c.createNewSession(hdr.SupportedVersions, conn)
 }
 
-func (c *client) createNewSession(initialVersion protocol.VersionNumber, negotiatedVersions []protocol.VersionNumber, conn connection) error {
+func (c *client) createNewSession(negotiatedVersions []protocol.VersionNumber, conn connection) error {
 	var err error
-	utils.Debugf("createNewSession with initial version %s", initialVersion)
 	c.session, c.handshakeChan, err = newClientSession(
 		conn,
 		c.pconnMgr,
+		c.config.CreatePaths,
 		c.hostname,
 		c.version,
 		c.connectionID,
 		c.tlsConf,
 		c.config,
-		initialVersion,
 		negotiatedVersions,
 	)
 	return err
