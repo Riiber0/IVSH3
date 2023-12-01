@@ -27,7 +27,7 @@ import (
 	"strings"
 	"time"
 
-	quic "github.com/lucas-clemente/quic-go"
+	//quic "github.com/lucas-clemente/quic-go"
 	"github.com/mholt/caddy"
 	"github.com/mholt/caddy/caddyfile"
 	"github.com/mholt/caddy/caddyhttp/staticfiles"
@@ -48,8 +48,8 @@ func init() {
 	flag.BoolVar(&HTTP2, "http2", true, "Use HTTP/2")
 	flag.BoolVar(&QUIC, "quic", false, "Use experimental QUIC")
 	flag.BoolVar(&useMP, "mp", false, "Use multipath QUIC")
-	flag.StringVar(&quic.SchedulerAlgorithm, "scheduler", "lowRTT", "specify the scheduling algorithm [lowRTT, RR, redundant]")
-	flag.StringVar(&quic.CongestionControl, "cc", "cubic", "specify the cc algorithm [cubic, olia]")
+	//flag.StringVar(&quic.SchedulerAlgorithm, "scheduler", "lowRTT", "specify the scheduling algorithm [lowRTT, RR, redundant]")
+	//flag.StringVar(&quic.CongestionControl, "cc", "cubic", "specify the cc algorithm [cubic, olia]")
 
 	caddy.RegisterServerType(serverType, caddy.ServerType{
 		Directives: func() []string { return directives },
