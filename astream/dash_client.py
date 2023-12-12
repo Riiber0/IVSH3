@@ -133,7 +133,7 @@ def download_segment(segment_url, dash_folder, download=False):
         filename = os.path.join(dash_folder, segment_name)
         print("SAVING IN ", filename)
 
-    segment_size = glueConnection.download_segment_PM(segment_url, filename)
+    segment_size = glueConnection.download_segment_PM(segment_url)
     if segment_size < 0:
         raise ValueError("invalid segment_size, connection dropped")
     return segment_size, segment_name
@@ -194,6 +194,7 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
     # Initialize the DASH buffer
     dash_player = dash_buffer.DashPlayer(dp_object.playback_duration, video_segment_duration)
     dash_player.start()
+    print(dp_object.playback_duration)
     # A folder to save the segments in
     file_identifier = id_generator()
     if download:
@@ -249,26 +250,27 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
     df = df[0].str.split(',', expand=True)
     df_index = 1
     move_alert_l = deque(df[0])
-    move_alert_time = move_alert_l.popleft()
+    move_alert_time = float(move_alert_l.popleft())
     tiles = df.iloc[df_index][1:]
+    tiles = [tile for tile in tiles if tile != '']
 
     # waiting for the player to finish playing
-    playback_start = time.time()
-    segment_number = dp_object[current_bitrate].start
+    segment_number = dp_object.video[current_bitrate].start
+    print("start while")
     while dash_player.playback_state not in dash_buffer.EXIT_STATES:
-        if segment_number > len(dp_list.keys())
-            if time.time() - playback_start >= move_alert_time:
+        if segment_number <= len(dp_list.keys()):
+            if dash_player.playback_timer.time() >= move_alert_time:
                 #change tiles
                 df_index += 1
                 tiles = df.iloc[df_index][1:]
+                tiles = [tile for tile in tiles if tile != '']
                 #change segment
-                move_alert_time = move_alert_l.popleft()
-                segment_number = move_alert_time//dp_object.segment_duration + 1
+                move_alert_time = float(move_alert_l.popleft())
 
             path_to_tiles = dp_list[segment_number][current_bitrate]
             for tile in tiles:
-                if not downloaded_tiles[segment_number[current_bitrate][int(tile)]:
-                    downloaded_tiles[segment_number[current_bitrate][int(tile)] = True
+                if not downloaded_tiles[segment_number][current_bitrate][int(tile)]:
+                    downloaded_tiles[segment_number][current_bitrate][int(tile)] = True
 
                     segment_url = urllib.parse.urljoin(domain, path_to_tiles[int(tile)])
                     
@@ -278,7 +280,10 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
                         config_dash.LOG.error('Unable to save segment %s' % e)
                         return None
 
-            segment_number += 1
+        segment_number = dash_player.playback_timer.time()//dp_object.video[current_bitrate].segment_duration + 1
+        print(segment_number)
+        print(dash_player.playback_timer.time())
+        print(dash_player.playback_state)
 
     glueConnection.stopLogging()
     glueConnection.closeConnection()
@@ -474,7 +479,7 @@ def main():
         print("ERROR: Please provide the URL to the MPD file. Try Again..")
         return None
 
-    glueConnection.setupFEC(fec, fecConfig)
+    #glueConnection.setupFEC(fec, fecConfig)
     glueConnection.setupPM(QUIC, MP, not NO_KEEP_ALIVE, SCHEDULER, CC)
 
     config_dash.LOG.info('Downloading MPD file %s' % MPD)

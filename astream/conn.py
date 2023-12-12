@@ -13,42 +13,25 @@ class GoString(Structure):
 
 
 lib.ClientSetup.argtypes = [c_bool,c_bool,c_bool,GoString,GoString]
-lib.DownloadSegment.argtypes = [GoString, GoString]
+lib.DownloadSegment.argtypes = [GoString]
 lib.CloseConnection.argtypes = []
 lib.StartLogging.argtypes = [c_uint]
 lib.StopLogging.argtypes = []
-lib.FECSetup.argtypes = [c_bool,GoString]
 
 import time
 last_time = None
 
-# values need to be valid for the program's lifetime
-schedulerNameEncoded = None
-congestionControlNameEncoded = None
-configEncoded = None
-
-def setupPM(useQUIC, useMP, keepAlive, schedulerName, congestionControlName='cubic'):
-    global schedulerNameEncoded
-    global congestionControlNameEncoded
-    schedulerNameEncoded = schedulerName.encode('ascii')
-    congestionControlNameEncoded = congestionControlName.encode('ascii')
-    scheduler = GoString(schedulerNameEncoded, len(schedulerNameEncoded))
-    cc = GoString(congestionControlNameEncoded, len(congestionControlNameEncoded))
+def setupPM(useQUIC, useMP, keepAlive, schedulerName, congestionControl='cubic'):
+    scheduler = GoString(schedulerName.encode('ascii'), len(schedulerName))
+    cc = GoString(congestionControl.encode('ascii'), len(congestionControl))
     lib.ClientSetup(useQUIC, useMP, keepAlive, scheduler, cc)
-
-def setupFEC(useFEC, config):
-    global configEncoded
-    configEncoded = config.encode('ascii')
-    configGoStr = GoString(configEncoded, len(configEncoded))
-    lib.FECSetup(useFEC, configGoStr)
 
 def closeConnection():
     lib.CloseConnection()
 
-def download_segment_PM(segment_url, filename=""):
+def download_segment_PM(segment_url):
     segment = GoString(segment_url.encode('ascii'), len(segment_url))
-    filename_encoded = GoString(filename.encode('ascii'), len(filename))
-    return lib.DownloadSegment(segment, filename_encoded)
+    return lib.DownloadSegment(segment)
 
 def startLogging(period):
     lib.StartLogging(period)
