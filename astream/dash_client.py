@@ -39,6 +39,7 @@ import config_dash
 import dash_buffer
 import time
 import pandas as pd
+from tile_delivery.py import DataReader
 
 
 # Constants
@@ -244,7 +245,11 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
     average_segment_sizes = netflix_rate_map = None
     netflix_state = "INITIAL"
 
-    # movedataset
+    # tile reader
+    tileReader = DataReader(dash_player.playback_timer, 'move_alert.csv')
+
+    """
+    # movedataset (old)
     df = pd.read_table('move_alert.csv', header=None)
     df = df.iloc[1:]
     df = df[0].str.split(',', expand=True)
@@ -253,22 +258,17 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
     move_alert_time = float(move_alert_l.popleft())
     tiles = df.iloc[df_index][1:]
     tiles = [tile for tile in tiles if tile != '']
+    """
 
     # waiting for the player to finish playing
     segment_number = dp_object.video[current_bitrate].start
     print("start while")
     while dash_player.playback_state not in dash_buffer.EXIT_STATES:
         if segment_number <= len(dp_list.keys()):
-            if dash_player.playback_timer.time() >= move_alert_time:
-                #change tiles
-                df_index += 1
-                tiles = df.iloc[df_index][1:]
-                tiles = [tile for tile in tiles if tile != '']
-                #change segment
-                move_alert_time = float(move_alert_l.popleft())
 
             path_to_tiles = dp_list[segment_number][current_bitrate]
-            for tile in tiles:
+
+            for tile in tileReader.get_tiles():
                 if not downloaded_tiles[segment_number][current_bitrate][int(tile)]:
                     downloaded_tiles[segment_number][current_bitrate][int(tile)] = True
 
