@@ -247,18 +247,12 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
 
     # tile reader
     tileReader = DataReader(dash_player.playback_timer, 'move_alert.csv')
+    dash_player.tile_getter = tileReader
 
-    """
-    # movedataset (old)
-    df = pd.read_table('move_alert.csv', header=None)
-    df = df.iloc[1:]
-    df = df[0].str.split(',', expand=True)
-    df_index = 1
-    move_alert_l = deque(df[0])
-    move_alert_time = float(move_alert_l.popleft())
-    tiles = df.iloc[df_index][1:]
-    tiles = [tile for tile in tiles if tile != '']
-    """
+    # tile variables
+    tiles_in_segment = []
+    last_segment = -1
+    tile_change = False
 
     # waiting for the player to finish playing
     segment_number = dp_object.video[current_bitrate].start
@@ -266,24 +260,74 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
     while dash_player.playback_state not in dash_buffer.EXIT_STATES:
         if segment_number <= len(dp_list.keys()):
 
+            if last_segment != segment_number:
+                tiles_in_segment = []
+
             path_to_tiles = dp_list[segment_number][current_bitrate]
 
             for tile in tileReader.get_tiles():
-                if not downloaded_tiles[segment_number][current_bitrate][int(tile)]:
-                    downloaded_tiles[segment_number][current_bitrate][int(tile)] = True
+                if not downloaded_tiles[segment_number][current_bitrate][tile]:
+                    downloaded_tiles[segment_number][current_bitrate][tile] = True
 
-                    segment_url = urllib.parse.urljoin(domain, path_to_tiles[int(tile)])
+                    if not tile_change:
+                        tile_change = True
+
+                    segment_url = urllib.parse.urljoin(domain, path_to_tiles[tile])
                     
                     try:
-                        download_segment(segment_url, file_identifier, download)
+                        start_time = timeit.default_timer()
+                        segment_size, segment_filename = download_segment(segment_url, file_identifier, download)
+                        segment_download_time = timeit.default_timer() - start_time
+                        previous_segment_times.append(segment_download_time)
+                        config_dash.LOG.info("{}: Downloaded segment {}".format(playback_type.upper(), segment_url))
                     except IOError as e:
                         config_dash.LOG.error('Unable to save segment %s' % e)
                         return None
+
+                    tiles_in_segment.append(tile)
+                    segment_size = dp_object.video[current_bitrate].segment_size
+
+                    recent_download_sizes.append(segment_size)
+                    segment_files.append(segment_filename)
+
+                    #update tje JSON information
+                    segment_name = os.path.split(segment_url)[1]
+                    if 'segment_info' not in config_dash.JSON_HANDLE:
+                        config_dash.JSON_HANDLE['segment_info'] = list()
+                    config_dash.JSON_HANDLE['segment_info'].append((segment_name, segment_size, segment_download_time))
+
+                    total_downloaded += segment_size
+                    config_dash.LOG.info("{} : The total downloaded = {}, segment_size = {}, segment_number = {}".format(
+                                        playback_type.upper(), total_downloaded, segment_size, segment_number))
+
+                    config_dash.LOG.info('Downloaded {}. Size = {} in {} seconds'.format(
+                                        segment_url, segment_size, str(segment_download_time)))
+
+            if last_segment != segment_number:
+                segment_info = {'playback_length' : video_segment_duration,
+                                'bitrate' : current_bitrate,
+                                'segment_number' : segment_number,
+                                'tiles_in_segment' : tiles_in_segment}
+
+                last_segment = segment_number
+                dash_player.write(segment_info)
+
+            elif tile_change:
+                dash_player.update_tiles(tiles_in_segment)
+                tile_change = False
+
 
         segment_number = dash_player.playback_timer.time()//dp_object.video[current_bitrate].segment_duration + 1
         print(segment_number)
         print(dash_player.playback_timer.time())
         print(dash_player.playback_state)
+
+        if previous_bitrate:
+            if previous_bitrate < current_bitrate:
+                config_dash.JSON_HANDLE['playback_info']['up_shifts'] += 1
+            elif previous_bitrate > current_bitrate:
+                config_dash.JSON_HANDLE['playback_info']['down_shifts'] += 1
+            previous_bitrate = current_bitrate
 
     glueConnection.stopLogging()
     glueConnection.closeConnection()

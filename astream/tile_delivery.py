@@ -30,7 +30,7 @@ class DataReader(TileDelivery):
         move_alert_l = deque(self.df[0])
         move_alert_time = float(move_alert_l.popleft())
         self.tiles = self.df.iloc[df_index][1:]
-        self.tiles = [tile for tile in self.tiles if tile != '']
+        self.tiles = [int(tile) for tile in self.tiles if tile != '']
 
         while True:
             if self.playback_timer.time() >= move_alert_time:
@@ -39,7 +39,7 @@ class DataReader(TileDelivery):
                 if df_index == len(self.df):
                     return
                 self.tiles = self.df.iloc[df_index][1:]
-                self.tiles = [tile for tile in self.tiles if tile != '']
+                self.tiles = [int(tile) for tile in self.tiles if tile != '']
                 #change segment
                 move_alert_time = float(move_alert_l.popleft())
             
@@ -52,14 +52,18 @@ class DataReader(TileDelivery):
         self.reader.start()
 
     def get_tiles(self):
+        while(self.tiles == None):
+            time.sleep(0.05)
+
         return self.tiles
 
 if __name__ == '__main__':
     """test"""
     r = StopWatch()
     r.start()
-    d = DataReader(r, 'data.csv')
+    d = DataReader(r, 'move_alert.csv')
     d.start()
+        
     while d.reader.is_alive():
         time.sleep(0.5)
         print(d.get_tiles())

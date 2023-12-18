@@ -306,11 +306,10 @@ def read_mpd(mpd_file, dashplayback, bitratefilter = None):
                     URL_LIST[bandwidth] = dict()
                     config_dash.JSON_HANDLE['video_metadata']['available_bitrates'].append(bandwidth)
                     media_object[bandwidth] = MediaObject()
-                    media_object[bandwidth].segment_sizes = []
                     media_object[bandwidth].start = int(adaptation_set.attrib['startWithSAP'])
                     media_object[bandwidth].base_url = base_urls[representation_id[0]]
                     media_object[bandwidth].initialization = media_object[bandwidth].base_url 
-                    media_object[bandwidth].segment_sizes.append(segment_duration * bandwidth / timescale)
+                    media_object[bandwidth].segment_size = segment_duration * bandwidth / timescale
                     media_object[bandwidth].segment_duration = video_segment_duration
 
                 new_id = int(representation_id.split('_')[1])

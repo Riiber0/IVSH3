@@ -48,6 +48,9 @@ class DashPlayer:
         self.buffer_lock = threading.Lock()
         self.current_segment = None
         self.buffer_log_file = config_dash.BUFFER_LOG_FILENAME
+        # 360 variables
+        self.tile_getter = None
+        self.needed_tiles = None
         config_dash.LOG.info("VideoLength={},segmentDuration={},MaxBufferSize={},InitialBuffer(secs)={},"
                              "BufferAlph(secs)={},BufferBeta(secs)={}".format(self.playback_duration,
                                                                               self.segment_duration,
@@ -178,6 +181,9 @@ class DashPlayer:
                             config_dash.LOG.info("Started playing with representation {} at {}".format(
                                 play_segment['bitrate'], self.playback_timer.time()))
 
+                        #tile code
+                        self.needed_tiles = self.tile_getter.get_tiles()
+
                         # Duration for which the video was played in seconds (integer)
                         if self.playback_timer.time() >= self.playback_duration:
                             config_dash.LOG.info("Completed the video playback: {} seconds".format(
@@ -222,6 +228,9 @@ class DashPlayer:
             segment['playback_length'], self.buffer_length))
         self.buffer_length_lock.release()
         self.log_entry(action="Writing", bitrate=segment['bitrate'])
+
+    def update_tiles(self, tiles):
+        self.current_segment['tiles_in_segment'] = tiles
 
     def start(self):
         """ Start playback"""
