@@ -183,6 +183,24 @@ class DashPlayer:
 
                         #tile code
                         self.needed_tiles = self.tile_getter.get_tiles()
+                        if not set(play_segment['tiles_in_segment']).issuperset(self.needed_tiles):
+                            config_dash.LOG.info("Entering buffering stage after {} seconds of playback".format( self.playback_timer.time()))
+                            self.playback_timer.pause()
+                            interruption_start = time.time()
+                            config_dash.JSON_HANDLE['playback_info']['interruptions']['count'] += 1
+
+                            while not set(play_segment['tiles_in_segment']).issuperset(self.needed_tiles):
+                                time.sleep(0.01)
+
+                            interruption_end = time.time()
+                            interruption = interruption_end - interruption_start
+
+                            config_dash.JSON_HANDLE['playback_info']['interruptions']['events'].append({
+                                "timeframe": (interruption_start, interruption_end),
+                                "segment_number": self.current_segment['segment_number'],})
+
+                            config_dash.JSON_HANDLE['playback_info']['interruptions']['total_duration'] += interruption
+                            config_dash.LOG.info("Duration of interruption = {}".format(interruption))
 
                         # Duration for which the video was played in seconds (integer)
                         if self.playback_timer.time() >= self.playback_duration:
