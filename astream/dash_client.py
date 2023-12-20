@@ -39,7 +39,7 @@ import config_dash
 import dash_buffer
 import time
 import pandas as pd
-from tile_delivery import DataReader
+from tile_delivery import narrowReader, AllReader
 
 
 # Constants
@@ -244,16 +244,27 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
     # Netflix Variables
     average_segment_sizes = netflix_rate_map = None
     netflix_state = "INITIAL"
-
-    # tile reader
-    tileReader = DataReader(dash_player.playback_timer, 'move_alert.csv')
-    dash_player.tile_getter = tileReader
-    tileReader.start()
-
     # tile variables
+    total_tiles = len(dp_list[segment_count][bitrate])
+    tiles = None
     tiles_in_segment = []
     tile_change = False
     last_segment = -1
+
+    # tile reader
+    if TILE-READER == "NARROW":
+        tileReader = NarrowReader(dash_player.playback_timer, 'move_alert.csv')
+    elif TILE-READER == "ALL":
+        tileReader = AllReader(dash_player.playback_timer, total_tiles)
+
+    #tile getter
+    if TILE-GETTER:
+        dash_player.tile_getter = NarrowReader(dash_player.playback_timer, 'move_alert.csv')
+        dash_player,tile_getter.start()
+    else TILE-GETTER:
+        dash_player.tile_getter = tileReader
+
+    tileReader.start()
 
     # waiting for the player to finish playing
     segment_number = dp_object.video[current_bitrate].start
@@ -264,8 +275,9 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
                 tiles_in_segment = []
 
             path_to_tiles = dp_list[segment_number][current_bitrate]
+            tiles = tileReader.get_tiles()
 
-            for tile in tileReader.get_tiles():
+            for tile in tiles:
                 if not downloaded_tiles[segment_number][current_bitrate][tile]:
                     downloaded_tiles[segment_number][current_bitrate][tile] = True
 
@@ -491,6 +503,12 @@ def create_arguments(parser):
                         help='FEC configuration to use')
     parser.add_argument('-t', '--TIME-LIMIT', type=int, default=None,
                         help="stop playback after this many seconds")
+    parser.add_argument('-tr', '--TILE-READER', 
+                        default="NARROW",
+                        help="TileDelivery object for client")
+    parser.add_argument('-tg', '--TILE-GETTER', action='store_true', 
+                        default=False,
+                        help="TileDelivery object for player")
 
 
 def main():

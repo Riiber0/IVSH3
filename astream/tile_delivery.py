@@ -15,7 +15,11 @@ class TileDelivery:
     def get_tiles(self):
         """ Return needed tiles"""
 
-class DataReader(TileDelivery):
+    @abstractmethod
+    def start(self):
+        """ thread setup and start """
+
+class NarrowReader(TileDelivery):
     """reads tiles from csv"""
     def __init__(self, timer, tiledataset):
         super().__init__(timer)
@@ -57,16 +61,32 @@ class DataReader(TileDelivery):
 
         return self.tiles
 
+class AllReader(TileDelivery):
+    """return list with every tile"""
+    def __init__(self, timer, total_tiles):
+        super().__init__(timer)
+        self.total_tiles = total_tiles
+        self.tile_list = None
+        
+    def start(self):
+        self.tile_list = [i for i in range(1, self.total_tiles+1)]
+
+    def get_tiles(self):
+        return self.tile_list
+
 if __name__ == '__main__':
     """test"""
     r = StopWatch()
     r.start()
-    d = DataReader(r, 'move_alert.csv')
+    d = AllReader(r, 200)
     d.start()
+    print(d.get_tiles())
         
+    """
     while d.reader.is_alive():
         time.sleep(0.5)
         print(d.get_tiles())
+    """
 
     print('fim')
     
