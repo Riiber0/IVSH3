@@ -201,6 +201,7 @@ class DashPlayer:
 
                             config_dash.JSON_HANDLE['playback_info']['interruptions']['total_duration'] += interruption
                             config_dash.LOG.info("Duration of interruption = {}".format(interruption))
+                            self.playback_timer.start()
 
                         # Duration for which the video was played in seconds (integer)
                         if self.playback_timer.time() >= self.playback_duration:
@@ -248,6 +249,8 @@ class DashPlayer:
         self.log_entry(action="Writing", bitrate=segment['bitrate'])
 
     def update_tiles(self, tiles):
+        while(self.current_segment == None):
+            time.sleep(0.1)
         self.current_segment['tiles_in_segment'] = tiles
 
     def start(self):

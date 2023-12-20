@@ -39,7 +39,7 @@ import config_dash
 import dash_buffer
 import time
 import pandas as pd
-from tile_delivery.py import DataReader
+from tile_delivery import DataReader
 
 
 # Constants
@@ -248,15 +248,15 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
     # tile reader
     tileReader = DataReader(dash_player.playback_timer, 'move_alert.csv')
     dash_player.tile_getter = tileReader
+    tileReader.start()
 
     # tile variables
     tiles_in_segment = []
-    last_segment = -1
     tile_change = False
+    last_segment = -1
 
     # waiting for the player to finish playing
     segment_number = dp_object.video[current_bitrate].start
-    print("start while")
     while dash_player.playback_state not in dash_buffer.EXIT_STATES:
         if segment_number <= len(dp_list.keys()):
 
@@ -269,7 +269,7 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
                 if not downloaded_tiles[segment_number][current_bitrate][tile]:
                     downloaded_tiles[segment_number][current_bitrate][tile] = True
 
-                    if not tile_change:
+                    if not tile_change and dash_player.current_segment != None:
                         tile_change = True
 
                     segment_url = urllib.parse.urljoin(domain, path_to_tiles[tile])
@@ -318,9 +318,6 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
 
 
         segment_number = dash_player.playback_timer.time()//dp_object.video[current_bitrate].segment_duration + 1
-        print(segment_number)
-        print(dash_player.playback_timer.time())
-        print(dash_player.playback_state)
 
         if previous_bitrate:
             if previous_bitrate < current_bitrate:
