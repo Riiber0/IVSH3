@@ -39,7 +39,7 @@ import config_dash
 import dash_buffer
 import time
 import pandas as pd
-from tile_delivery import narrowReader, AllReader
+from tile_delivery import NarrowReader, AllReader
 
 
 # Constants
@@ -252,16 +252,16 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
     last_segment = -1
 
     # tile reader
-    if TILE-READER == "NARROW":
+    if TILE_READER == "NARROW":
         tileReader = NarrowReader(dash_player.playback_timer, 'move_alert.csv')
-    elif TILE-READER == "ALL":
+    elif TILE_READER == "ALL":
         tileReader = AllReader(dash_player.playback_timer, total_tiles)
 
     #tile getter
-    if TILE-GETTER:
+    if TILE_GETTER:
         dash_player.tile_getter = NarrowReader(dash_player.playback_timer, 'move_alert.csv')
-        dash_player,tile_getter.start()
-    else TILE-GETTER:
+        dash_player.tile_getter.start()
+    else:
         dash_player.tile_getter = tileReader
 
     tileReader.start()
@@ -285,6 +285,7 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
                         tile_change = True
 
                     segment_url = urllib.parse.urljoin(domain, path_to_tiles[tile])
+                    config_dash.LOG.info("{}: Downloading file {}".format(TILE_READER.upper(), segment_url))
                     
                     try:
                         start_time = timeit.default_timer()
@@ -503,10 +504,10 @@ def create_arguments(parser):
                         help='FEC configuration to use')
     parser.add_argument('-t', '--TIME-LIMIT', type=int, default=None,
                         help="stop playback after this many seconds")
-    parser.add_argument('-tr', '--TILE-READER', 
+    parser.add_argument('-tr', '--TILE_READER', 
                         default="NARROW",
                         help="TileDelivery object for client")
-    parser.add_argument('-tg', '--TILE-GETTER', action='store_true', 
+    parser.add_argument('-tg', '--TILE_GETTER', action='store_true', 
                         default=False,
                         help="TileDelivery object for player")
 

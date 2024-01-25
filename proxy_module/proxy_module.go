@@ -124,6 +124,7 @@ func createRemoteClient() {
 		}
 
 		hclient = &http.Client{
+			Timeout: time.Second * 10,
 			Transport: roundTripper,
 		}
 
