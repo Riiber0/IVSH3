@@ -120,7 +120,10 @@ func createRemoteClient() {
 		// Use a HTTP/2.0 connection via QUIC
 		roundTripper = &h2quic.RoundTripper{
 			TLSClientConfig: tlsConfig,
-			QuicConfig:      &quic.Config{CreatePaths: useMP},
+			QuicConfig: &quic.Config{CreatePaths: useMP,
+						IdleTimeout: 10 * time.Second,
+						KeepAlive: true,
+						HandshakeTimeout: 10 * time.Second,},
 		}
 
 		hclient = &http.Client{

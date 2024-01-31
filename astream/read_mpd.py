@@ -301,7 +301,6 @@ def read_mpd(mpd_file, dashplayback, bitratefilter = None):
                 video_segment_duration = segment_duration / timescale
 
                 if bandwidth not in config_dash.JSON_HANDLE['video_metadata']['available_bitrates']:
-                    print(bandwidth)
                     config_dash.LOG.info(bandwidth)
                     URL_LIST[bandwidth] = dict()
                     config_dash.JSON_HANDLE['video_metadata']['available_bitrates'].append(bandwidth)
@@ -319,7 +318,6 @@ def read_mpd(mpd_file, dashplayback, bitratefilter = None):
                 for segment in segment_list:
                     segurl = '' + segment.attrib['media']
                     URL_LIST[bandwidth][new_id].append(segurl)
-                    print(segurl)
 
 
     else:
