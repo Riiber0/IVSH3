@@ -846,6 +846,7 @@ func (s *session) AcceptStream() (Stream, error) {
 
 // OpenStream opens a stream
 func (s *session) OpenStream() (Stream, error) {
+	utils.Debugf("Stream: %x", Stream.StreamID)
 	return s.streamsMap.OpenStream()
 }
 

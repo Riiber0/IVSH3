@@ -121,9 +121,9 @@ func createRemoteClient() {
 		roundTripper = &h2quic.RoundTripper{
 			TLSClientConfig: tlsConfig,
 			QuicConfig: &quic.Config{CreatePaths: useMP,
-						IdleTimeout: 10 * time.Second,
+						IdleTimeout: 20 * time.Second,
 						KeepAlive: true,
-						HandshakeTimeout: 10 * time.Second,},
+						HandshakeTimeout: 20 * time.Second,},
 		}
 
 		hclient = &http.Client{
@@ -153,6 +153,7 @@ func createRemoteClient() {
 //export StartLogging
 func StartLogging(period uint) {
 
+	os.Setenv("QUIC_GO_LOG_LEVEL", "DEBUG")
 	if logTicker == nil {
 		logTicker = time.NewTicker(time.Duration(period) * time.Millisecond)
 		logStopChannel = make(chan struct{})
