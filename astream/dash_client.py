@@ -315,6 +315,7 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
 
                     config_dash.LOG.info('Downloaded {}. Size = {} in {} seconds'.format(
                                         segment_url, segment_size, str(segment_download_time)))
+                    time.sleep(1.5)
 
             if last_segment != segment_number:
                 segment_info = {'playback_length' : video_segment_duration,
@@ -338,6 +339,7 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
             elif previous_bitrate > current_bitrate:
                 config_dash.JSON_HANDLE['playback_info']['down_shifts'] += 1
             previous_bitrate = current_bitrate
+
 
     glueConnection.stopLogging()
     glueConnection.closeConnection()
