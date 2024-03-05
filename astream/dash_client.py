@@ -239,7 +239,7 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
     total_downloaded = 0
     # Delay in terms of the number of segments
     delay = 0
-    segment_duration = 0
+    segment_duration = dp_object.video[current_bitrate].segment_duration
     segment_size = segment_download_time = None
     # Netflix Variables
     average_segment_sizes = netflix_rate_map = None
@@ -253,13 +253,16 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
 
     # tile reader
     if TILE_READER == "NARROW":
-        tileReader = NarrowReader(dash_player.playback_timer, 'move_alert.csv')
+        tileReader = NarrowReader(dash_player.playback_timer, 'move_alert.csv', segment_duration)
     elif TILE_READER == "ALL":
-        tileReader = AllReader(dash_player.playback_timer, total_tiles)
+        tileReader = AllReader(dash_player.playback_timer, total_tiles, segment_duration)
+    elif TILE_READER == "PERFPREDICT":
+        tiledReader = PerfPredict(dash_player.playback_timer, 'move_alert.csv', segment_duration, PREDICT_TIME)
+        TILE_GETTER = True
 
     #tile getter
     if TILE_GETTER:
-        dash_player.tile_getter = NarrowReader(dash_player.playback_timer, 'move_alert.csv')
+        dash_player.tile_getter = NarrowReader(dash_player.playback_timer, 'move_alert.csv', segment_duration)
         dash_player.tile_getter.start()
     else:
         dash_player.tile_getter = tileReader
@@ -271,11 +274,11 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
     while dash_player.playback_state not in dash_buffer.EXIT_STATES:
         if segment_number <= len(dp_list.keys()):
 
+            segment_number, tiles = tileReader.get_tiles()
+            path_to_tiles = dp_list[segment_number][current_bitrate]
+
             if last_segment != segment_number:
                 tiles_in_segment = []
-
-            path_to_tiles = dp_list[segment_number][current_bitrate]
-            tiles = tileReader.get_tiles()
 
             for tile in tiles:
                 if not downloaded_tiles[segment_number][current_bitrate][tile]:
@@ -315,7 +318,6 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
 
                     config_dash.LOG.info('Downloaded {}. Size = {} in {} seconds'.format(
                                         segment_url, segment_size, str(segment_download_time)))
-                    time.sleep(1.5)
 
             if last_segment != segment_number:
                 segment_info = {'playback_length' : video_segment_duration,
@@ -331,7 +333,8 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
                 tile_change = False
 
 
-        segment_number = dash_player.playback_timer.time()//dp_object.video[current_bitrate].segment_duration + 1
+        #old:
+        #segment_number = dash_player.playback_timer.time()//dp_object.video[current_bitrate].segment_duration + 1
 
         if previous_bitrate:
             if previous_bitrate < current_bitrate:
@@ -511,7 +514,10 @@ def create_arguments(parser):
                         help="TileDelivery object for client")
     parser.add_argument('-tg', '--TILE_GETTER', action='store_true', 
                         default=False,
-                        help="TileDelivery object for player")
+                        help="TileDelivery object for buffer")
+    parser.add_argument('-pt', '--PREDICT_TIME', 
+                        default=0.5,
+                        help="Prediction time")
 
 
 def main():

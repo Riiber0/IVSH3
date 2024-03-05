@@ -182,7 +182,7 @@ class DashPlayer:
                                 play_segment['bitrate'], self.playback_timer.time()))
 
                         #tile code
-                        self.needed_tiles = self.tile_getter.get_tiles()
+                        segment, self.needed_tiles = self.tile_getter.get_tiles()
                         if not set(play_segment['tiles_in_segment']).issuperset(self.needed_tiles):
                             config_dash.LOG.info("Entering buffering stage after {} seconds of playback".format( self.playback_timer.time()))
                             self.playback_timer.pause()
