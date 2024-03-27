@@ -295,6 +295,11 @@ def read_mpd(mpd_file, dashplayback, bitratefilter = None):
 
                 media_object = dashplayback.video
                 bandwidth = int(representation.attrib['bandwidth'])
+
+                if bitratefilter is not None and bandwidth != int(bitratefilter):
+                    # if we apply a filter on the bitrates, ignore those not in it
+                    continue
+
                 representation_id = representation.attrib['id']
                 segment_duration = float(segment_list.attrib['duration'])
                 timescale = float(segment_list.attrib['timescale'])

@@ -18,7 +18,7 @@ class MediaObject(object):
 configure_log_file(playback_type='basic')
 mpd_file = open('main_profile.mpd', 'rb')
 dp_object = read_mpd.DashPlayback()
-dp_object, video_segment_duration = read_mpd.read_mpd(mpd_file, dp_object)
+dp_object, video_segment_duration = read_mpd.read_mpd(mpd_file, dp_object, 14560192)
 
 print(dp_object.video[14560192].start)
 print(dp_object.video[14560192].segment_duration)

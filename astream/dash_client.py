@@ -279,6 +279,15 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
             if last_segment != segment_number:
                 tiles_in_segment = []
 
+            if BITRATE is not None:
+                pass
+
+            elif playback_type.upper() == "BASIC":
+                if last_segment != segment_number:
+                    current_bitrate, average_dwn_time = basic_dash3.basic_dash3(
+                    segment_number, bitrates, average_dwn_time, recent_download_sizes, 
+                    previous_segment_times, current_bitrate)
+
             for tile in tiles:
                 if not downloaded_tiles[segment_number][current_bitrate][tile]:
                     downloaded_tiles[segment_number][current_bitrate][tile] = True
