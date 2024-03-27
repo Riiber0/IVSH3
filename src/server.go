@@ -197,6 +197,16 @@ func populateServerConfig(config *Config) *Config {
 		maxReceiveConnectionFlowControlWindow = protocol.DefaultMaxReceiveConnectionFlowControlWindowServer
 	}
 
+	pathScheduler := config.PathScheduler
+	if pathScheduler == "" {
+		pathScheduler = protocol.DefaultPathScheduler
+	}
+
+	streamScheduler := config.StreamScheduler
+	if streamScheduler == "" {
+		streamScheduler = protocol.DefaultStreamScheduler
+	}
+
 	return &Config{
 		Versions:                              versions,
 		HandshakeTimeout:                      handshakeTimeout,
@@ -205,7 +215,8 @@ func populateServerConfig(config *Config) *Config {
 		KeepAlive:                             config.KeepAlive,
 		MaxReceiveStreamFlowControlWindow:     maxReceiveStreamFlowControlWindow,
 		MaxReceiveConnectionFlowControlWindow: maxReceiveConnectionFlowControlWindow,
-		CreatePaths:                           config.CreatePaths,
+		PathScheduler:                         pathScheduler,
+		StreamScheduler:                       streamScheduler,
 	}
 }
 

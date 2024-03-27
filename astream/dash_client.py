@@ -258,10 +258,9 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
         tileReader = AllReader(dash_player.playback_timer, total_tiles, segment_duration)
     elif TILE_READER == "PERFPREDICT":
         tiledReader = PerfPredict(dash_player.playback_timer, 'move_alert.csv', segment_duration, PREDICT_TIME)
-        TILE_GETTER = True
 
     #tile getter
-    if TILE_GETTER:
+    if TILE_GETTER or TILE_READER == "PERFPREDICT":
         dash_player.tile_getter = NarrowReader(dash_player.playback_timer, 'move_alert.csv', segment_duration)
         dash_player.tile_getter.start()
     else:

@@ -55,6 +55,7 @@ func (mc *mintController) Handshake() mint.Alert {
 
 func (mc *mintController) GetCipherSuite() mint.CipherSuiteParams {
 	return mc.conn.State().CipherSuite
+	//return mc.conn.ConnectionState().CipherSuite
 }
 
 func (mc *mintController) ComputeExporter(label string, context []byte, keyLength int) ([]byte, error) {

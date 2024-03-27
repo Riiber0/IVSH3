@@ -96,6 +96,7 @@ func (c *flowController) UpdateSendWindow(newOffset protocol.ByteCount) bool {
 		c.sendWindow = newOffset
 		return true
 	}
+
 	return false
 }
 
@@ -182,7 +183,7 @@ func (c *flowController) maybeAdjustWindowIncrement() {
 	timeSinceLastWindowUpdate := time.Since(c.lastWindowUpdateTime)
 
 	var maxRemoteRTT time.Duration
-	for _, remoteRTT := range(c.remoteRTTs) {
+	for _, remoteRTT := range c.remoteRTTs {
 		maxRemoteRTT = utils.MaxDuration(maxRemoteRTT, remoteRTT)
 	}
 

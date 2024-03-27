@@ -42,22 +42,37 @@ var (
 	// make it possible to mock connection ID generation in the tests
 	generateConnectionID         = utils.GenerateConnectionID
 	errCloseSessionForNewVersion = errors.New("closing session in order to recreate it with a new version")
+	errCannotParseLocalAddress   = errors.New("invalid local address")
 )
 
 // DialAddr establishes a new QUIC connection to a server.
-// The hostname for SNI is taken from the given address.
-func DialAddr(addr string, tlsConf *tls.Config, config *Config) (Session, error) {
-	udpAddr, err := net.ResolveUDPAddr("udp", addr)
+// The hostname for SNI is taken from the given remote address.
+func DialAddr(remoteAddr string, tlsConf *tls.Config, config *Config) (Session, error) {
+	udpAddr, err := net.ResolveUDPAddr("udp", remoteAddr)
 	if err != nil {
 		return nil, err
 	}
+
+	// Establish the connection via the specified local address
+	if config.BindAddr == "" {
+		config.BindAddr = "0.0.0.0"
+	}
+	localAddr := net.ParseIP(config.BindAddr)
+	if localAddr == nil {
+		err = errCannotParseLocalAddress
+		return nil, err
+	}
+
 	// Create the pconnManager here. It will be used to manage UDP connections
 	pconnMgr := &pconnManager{perspective: protocol.PerspectiveClient}
-	err = pconnMgr.setup(nil, nil)
+	err = pconnMgr.newSetup(nil, localAddr)
 	if err != nil {
 		return nil, err
 	}
-	return Dial(pconnMgr.pconnAny, udpAddr, addr, tlsConf, config, pconnMgr)
+
+	utils.Infof("Created pconn_manager, any on: " + pconnMgr.pconnAny.LocalAddr().String())
+
+	return Dial(pconnMgr.pconnAny, udpAddr, remoteAddr, tlsConf, config, pconnMgr)
 }
 
 // DialAddrNonFWSecure establishes a new QUIC connection to a server.
@@ -189,6 +204,21 @@ func populateClientConfig(config *Config) *Config {
 		maxReceiveConnectionFlowControlWindow = protocol.DefaultMaxReceiveConnectionFlowControlWindowClient
 	}
 
+	bindAddr := config.BindAddr
+	if bindAddr == "" {
+		bindAddr = "0.0.0.0"
+	}
+
+	pathScheduler := config.PathScheduler
+	if pathScheduler == "" {
+		pathScheduler = protocol.DefaultPathScheduler
+	}
+
+	streamScheduler := config.StreamScheduler
+	if streamScheduler == "" {
+		streamScheduler = protocol.DefaultStreamScheduler
+	}
+
 	return &Config{
 		Versions:                              versions,
 		HandshakeTimeout:                      handshakeTimeout,
@@ -196,9 +226,12 @@ func populateClientConfig(config *Config) *Config {
 		RequestConnectionIDTruncation:         config.RequestConnectionIDTruncation,
 		MaxReceiveStreamFlowControlWindow:     maxReceiveStreamFlowControlWindow,
 		MaxReceiveConnectionFlowControlWindow: maxReceiveConnectionFlowControlWindow,
-		KeepAlive:      config.KeepAlive,
-		CacheHandshake: config.CacheHandshake,
-		CreatePaths:    config.CreatePaths,
+		KeepAlive:                             config.KeepAlive,
+		CacheHandshake:                        config.CacheHandshake,
+		CreatePaths:                           config.CreatePaths,
+		BindAddr:                              bindAddr,
+		PathScheduler:                         pathScheduler,
+		StreamScheduler:                       streamScheduler,
 	}
 }
 

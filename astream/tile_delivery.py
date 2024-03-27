@@ -39,9 +39,9 @@ class NarrowReader(TileDelivery):
         self.tiles = [int(tile) for tile in self.tiles if tile != '']
 
         while True:
+            #change segment
+            self.segment = self.playback_timer.time()//self.segment_duration + 1
             if self.playback_timer.time() >= move_alert_time:
-                #change segment
-                self.segment = self.playback_timer.time()//self.segment_duration + 1
 
                 #change tiles
                 df_index += 1
@@ -107,9 +107,9 @@ class PerfPredict(TileDelivery):
         tiles_sum.sort()
         self.tiles = tiles_sum
         while True:
+            #change segment
+            self.segment = (self.playback_timer.time() + self.predict_time)//self.segment_duration + 1
             if (self.playback_timer.time() + self.predict_time) >= move_alert_time:
-                #change segment
-                self.segment = (self.playback_timer.time() + self.predict_time)//self.segment_duration + 1
 
                 #change tiles
                 df_index += 1
