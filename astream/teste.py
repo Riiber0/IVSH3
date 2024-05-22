@@ -16,13 +16,9 @@ class MediaObject(object):
 """
 
 configure_log_file(playback_type='basic')
-mpd_file = open('main_profile.mpd', 'rb')
+mpd_file = open('dash_tiled.mpd', 'rb')
 dp_object = read_mpd.DashPlayback()
-dp_object, video_segment_duration = read_mpd.read_mpd(mpd_file, dp_object, 14560192)
-
-print(dp_object.video[14560192].start)
-print(dp_object.video[14560192].segment_duration)
-print(dp_object.video[14560192].initialization)  
+dp_object, video_segment_duration = read_mpd.read_mpd(mpd_file, dp_object, None)
 
 dp_list = dict()
 
@@ -46,4 +42,8 @@ for bitrate in dp_object.video:
 
             dp_list[segment_count][bitrate][tile_id] = segment_url
 
-print(len(dp_list.keys()))
+for seg in dp_list:
+    print(seg)
+    for bitrate in dp_list[segment_count]:
+        print(bitrate)
+        print(len(dp_list[segment_count][bitrate]))

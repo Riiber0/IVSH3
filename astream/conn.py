@@ -1,5 +1,6 @@
 from ctypes import *
 import os.path
+import numpy as np
 
 current_dir_path = os.path.dirname(os.path.realpath(__file__))
 lib = cdll.LoadLibrary(current_dir_path + "/proxy_module.so")
@@ -12,19 +13,20 @@ class GoString(Structure):
     _fields_ = [("p", c_char_p), ("n", c_longlong)]
 
 
-lib.ClientSetup.argtypes = [c_bool,c_bool,c_bool,GoString,GoString]
+lib.ClientSetup.argtypes = [c_bool,c_bool,c_bool, c_bool,GoString,GoString]
 lib.DownloadSegment.argtypes = [GoString]
 lib.CloseConnection.argtypes = []
 lib.StartLogging.argtypes = [c_uint]
 lib.StopLogging.argtypes = []
+lib.DownloadSegmentPriority.argtypes = [GoString, c_ubyte]
 
 import time
 last_time = None
 
-def setupPM(useQUIC, useMP, keepAlive, schedulerName, congestionControl='cubic'):
+def setupPM(useQUIC, useMP, keepAlive, useMS, schedulerName, congestionControl='cubic'):
     scheduler = GoString(schedulerName.encode('ascii'), len(schedulerName))
     cc = GoString(congestionControl.encode('ascii'), len(congestionControl))
-    lib.ClientSetup(useQUIC, useMP, keepAlive, scheduler, cc)
+    lib.ClientSetup(useQUIC, useMP, keepAlive, useMS, scheduler, cc)
 
 def closeConnection():
     lib.CloseConnection()
@@ -38,3 +40,8 @@ def startLogging(period):
 
 def stopLogging():
     lib.StopLogging()
+
+def download_segment_priority_PM(segment_url, segment_priority):
+    segment = GoString(segment_url.encode('ascii'), len(segment_url))
+    print(1)
+    return lib.DownloadSegmentPriority(segment, segment_priority)

@@ -282,47 +282,53 @@ def read_mpd(mpd_file, dashplayback, bitratefilter = None):
         for adaptation_set in child_period:
             if adaptation_set.attrib['par'] == '16:9':
                 essential_prop = adaptation_set[0]
-                representation = adaptation_set[1]
-                segment_list = representation[0]
-                initialization = segment_list[0]
-                base_urls[representation.attrib['id']] = '' + initialization.attrib['sourceURL']
+                for representation in adaptation_set[1:]:
+                # representation = adaptation_set[1]
+                    segment_list = representation[0]
+                    initialization = segment_list[0]
+                    base_urls[representation.attrib['id']] = '' + initialization.attrib['sourceURL']
 
 
-            else: # tile
+        for adaptation_set in child_period:
+            if not adaptation_set.attrib['par'] == '16:9': # tile
                 supplement_prop = adaptation_set[0]
-                representation = adaptation_set[1]
-                segment_list = representation[0]
 
-                media_object = dashplayback.video
-                bandwidth = int(representation.attrib['bandwidth'])
+                for representation in adaptation_set[1:]:
+                # representation = adaptation_set[1]
+                    segment_list = representation[0]
 
-                if bitratefilter is not None and bandwidth != int(bitratefilter):
-                    # if we apply a filter on the bitrates, ignore those not in it
-                    continue
+                    media_object = dashplayback.video
+                    bandwidth = int(representation.attrib['bandwidth'])
 
-                representation_id = representation.attrib['id']
-                segment_duration = float(segment_list.attrib['duration'])
-                timescale = float(segment_list.attrib['timescale'])
-                video_segment_duration = segment_duration / timescale
+                    if bitratefilter is not None and bandwidth != int(bitratefilter):
+                        # if we apply a filter on the bitrates, ignore those not in it
+                        continue
 
-                if bandwidth not in config_dash.JSON_HANDLE['video_metadata']['available_bitrates']:
-                    config_dash.LOG.info(bandwidth)
-                    URL_LIST[bandwidth] = dict()
-                    config_dash.JSON_HANDLE['video_metadata']['available_bitrates'].append(bandwidth)
-                    media_object[bandwidth] = MediaObject()
-                    media_object[bandwidth].start = int(adaptation_set.attrib['startWithSAP'])
-                    media_object[bandwidth].base_url = base_urls[representation_id[0]]
-                    media_object[bandwidth].initialization = media_object[bandwidth].base_url 
-                    media_object[bandwidth].segment_size = segment_duration * bandwidth / timescale
-                    media_object[bandwidth].segment_duration = video_segment_duration
+                    representation_id = representation.attrib['id']
+                    segment_duration = float(segment_list.attrib['duration'])
+                    timescale = float(segment_list.attrib['timescale'])
+                    video_segment_duration = segment_duration / timescale
 
-                new_id = int(representation_id.split('_')[1])
-                new_id += -1
-                URL_LIST[bandwidth][new_id] = list()
-                config_dash.LOG.info(representation_id)
-                for segment in segment_list:
-                    segurl = '' + segment.attrib['media']
-                    URL_LIST[bandwidth][new_id].append(segurl)
+                    if bandwidth not in config_dash.JSON_HANDLE['video_metadata']['available_bitrates']:
+                        #config_dash.LOG.info(bandwidth)
+                        URL_LIST[bandwidth] = dict()
+                        config_dash.JSON_HANDLE['video_metadata']['available_bitrates'].append(bandwidth)
+                        media_object[bandwidth] = MediaObject()
+                        media_object[bandwidth].start = int(adaptation_set.attrib['startWithSAP'])
+                        media_object[bandwidth].base_url = base_urls[representation_id[0]]
+                        media_object[bandwidth].initialization = media_object[bandwidth].base_url 
+                        media_object[bandwidth].segment_size = segment_duration * bandwidth / timescale
+                        media_object[bandwidth].segment_duration = video_segment_duration
+
+                    new_id = int(representation_id.split('_')[1])
+                    bitrate_id = int(representation_id.split('_')[0])
+                    new_id -= (bitrate_id - 1) * 200
+                    new_id += -1 
+                    URL_LIST[bandwidth][new_id] = list()
+                    #config_dash.LOG.info(representation_id)
+                    for segment in segment_list:
+                        segurl = '' + segment.attrib['media']
+                        URL_LIST[bandwidth][new_id].append(segurl)
 
 
     else:

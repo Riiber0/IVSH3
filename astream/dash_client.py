@@ -39,8 +39,7 @@ import config_dash
 import dash_buffer
 import time
 import pandas as pd
-from tile_delivery import NarrowReader, AllReader
-
+from tile_delivery import *
 
 # Constants
 DEFAULT_PLAYBACK = 'BASIC'
@@ -139,6 +138,23 @@ def download_segment(segment_url, dash_folder, download=False):
         raise ValueError("invalid segment_size, connection dropped")
     return segment_size, segment_name
 
+def download_segment_priority(segment_url, priority, dash_folder, download=False):
+    """ Module to download the segment with one
+        permanent HTTP connection.
+        File is not written to disk.
+    """
+    cropped_fInd = segment_url.rfind('/')
+    segment_name = segment_url[cropped_fInd+1:len(segment_url)]
+
+    filename = ""
+    if download:
+        filename = os.path.join(dash_folder, segment_name)
+        print("SAVING IN ", filename)
+
+    segment_size = glueConnection.download_segment_priority_PM(segment_url, priority)
+    if segment_size < 0:
+        raise ValueError("invalid segment_size, connection dropped")
+    return segment_size, segment_name
 
 def get_media_all(domain, media_info, file_identifier, done_queue):
     """ Download the media from the list of URL's in media
@@ -248,16 +264,17 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
     total_tiles = len(dp_list[segment_count][bitrate])
     tiles = None
     tiles_in_segment = []
-    tile_change = False
     last_segment = -1
+    pre_ulrs_dict = None # (tile : [bitrate, stream_priotyt]), created by ABR
+    urls_dict = None # (file_url : stream_prioryt), created after pre_url_dict mapping
 
     # tile reader
     if TILE_READER == "NARROW":
         tileReader = NarrowReader(dash_player.playback_timer, 'move_alert.csv', segment_duration)
     elif TILE_READER == "ALL":
         tileReader = AllReader(dash_player.playback_timer, total_tiles, segment_duration)
-    elif TILE_READER == "PERFPREDICT":
-        tiledReader = PerfPredict(dash_player.playback_timer, 'move_alert.csv', segment_duration, PREDICT_TIME)
+    elif TILE_READER.upper() == "PERFPREDICT":
+        tileReader = PerfPredict(dash_player.playback_timer, 'move_alert.csv', segment_duration, PREDICT_TIME)
 
     #tile getter
     if TILE_GETTER or TILE_READER == "PERFPREDICT":
@@ -289,18 +306,16 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
                     previous_segment_times, current_bitrate)
 
             for tile in tiles:
+                # print("{} {} {}".format(segment_number, current_bitrate, tile))
                 if not downloaded_tiles[segment_number][current_bitrate][tile]:
                     downloaded_tiles[segment_number][current_bitrate][tile] = True
 
-                    if not tile_change and dash_player.current_segment != None:
-                        tile_change = True
-
                     segment_url = urllib.parse.urljoin(domain, path_to_tiles[tile])
-                    config_dash.LOG.info("{}: Downloading file {}".format(TILE_READER.upper(), segment_url))
+                    config_dash.LOG.info("{}: Downloading file {}".format(playback_type.upper(), segment_url))
                     
                     try:
                         start_time = timeit.default_timer()
-                        segment_size, segment_filename = download_segment(segment_url, file_identifier, download)
+                        segment_size, segment_filename = download_segment_priority(segment_url, 0xff, file_identifier, download)
                         segment_download_time = timeit.default_timer() - start_time
                         previous_segment_times.append(segment_download_time)
                         config_dash.LOG.info("{}: Downloaded segment {}".format(playback_type.upper(), segment_url))
@@ -335,11 +350,6 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
 
                 last_segment = segment_number
                 dash_player.write(segment_info)
-
-            elif tile_change:
-                dash_player.update_tiles(tiles_in_segment)
-                tile_change = False
-
 
         #old:
         #segment_number = dash_player.playback_timer.time()//dp_object.video[current_bitrate].segment_duration + 1
@@ -526,6 +536,9 @@ def create_arguments(parser):
     parser.add_argument('-pt', '--PREDICT_TIME', 
                         default=0.5,
                         help="Prediction time")
+    parser.add_argument('-ms', '--MS', action='store_true', 
+                        default=False,
+                        help="Use mult-stream")
 
 
 def main():
@@ -556,7 +569,7 @@ def main():
         return None
 
     #glueConnection.setupFEC(fec, fecConfig)
-    glueConnection.setupPM(QUIC, MP, not NO_KEEP_ALIVE, SCHEDULER, CC)
+    glueConnection.setupPM(QUIC, MP, not NO_KEEP_ALIVE, MS, SCHEDULER, CC)
 
     config_dash.LOG.info('Downloading MPD file %s' % MPD)
     # Retrieve the MPD files for the video
