@@ -40,6 +40,7 @@ import dash_buffer
 import time
 import pandas as pd
 from tile_delivery import *
+from threading import Thread
 
 # Constants
 DEFAULT_PLAYBACK = 'BASIC'
@@ -52,6 +53,9 @@ LIST = False
 PLAYBACK = DEFAULT_PLAYBACK
 DOWNLOAD = False
 SEGMENT_LIMIT = None
+
+#Globals for threads
+total_downloaded = None
 
 
 class DashPlayback:
@@ -155,6 +159,37 @@ def download_segment_priority(segment_url, priority, dash_folder, download=False
     if segment_size < 0:
         raise ValueError("invalid segment_size, connection dropped")
     return segment_size, segment_name
+
+def download_thread(playback_type, tile, segment_url, priority, file_identifier, download,
+                    previous_segment_times, tiles_in_segment, download_sizes_t, segment_files):
+    config_dash.LOG.info("{}: Downloading file {}".format(playback_type.upper(), segment_url))
+    
+    try:
+        start_time = timeit.default_timer()
+        segment_size, segment_filename = download_segment_priority(segment_url, priority, file_identifier, download)
+        segment_download_time = timeit.default_timer() - start_time
+        previous_segment_times.append(segment_download_time)
+        config_dash.LOG.info("{}: Downloaded segment {}".format(playback_type.upper(), segment_url))
+    except IOError as e:
+        config_dash.LOG.error('Unable to save segment %s' % e)
+        return None
+
+    tiles_in_segment.append(tile)
+    #segment_size = dp_object.video[current_bitrate].segment_size
+
+    download_sizes_t.append(segment_size)
+    segment_files.append(segment_filename)
+
+    #update tje JSON information
+    segment_name = os.path.split(segment_url)[1]
+    if 'segment_info' not in config_dash.JSON_HANDLE:
+        config_dash.JSON_HANDLE['segment_info'] = list()
+    config_dash.JSON_HANDLE['segment_info'].append((segment_name, segment_size, segment_download_time))
+
+    download_sizes_t.append(segment_size)
+
+    config_dash.LOG.info('Downloaded {}. Size = {} in {} seconds'.format(
+                            segment_url, segment_size, str(segment_download_time)))
 
 def get_media_all(domain, media_info, file_identifier, done_queue):
     """ Download the media from the list of URL's in media
@@ -267,6 +302,8 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
     last_segment = -1
     pre_ulrs_dict = None # (tile : [bitrate, stream_priotyt]), created by ABR
     urls_dict = None # (file_url : stream_prioryt), created after pre_url_dict mapping
+    #tread variables
+    t_list = []
 
     # tile reader
     if TILE_READER == "NARROW":
@@ -305,42 +342,74 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
                     segment_number, bitrates, average_dwn_time, recent_download_sizes, 
                     previous_segment_times, current_bitrate)
 
+            #TODO stream priority
+            priority = 0xff
+
+            if MS:
+                threads = []
+                download_sizes_t = []
+
             for tile in tiles:
                 # print("{} {} {}".format(segment_number, current_bitrate, tile))
                 if not downloaded_tiles[segment_number][current_bitrate][tile]:
                     downloaded_tiles[segment_number][current_bitrate][tile] = True
 
                     segment_url = urllib.parse.urljoin(domain, path_to_tiles[tile])
-                    config_dash.LOG.info("{}: Downloading file {}".format(playback_type.upper(), segment_url))
-                    
-                    try:
-                        start_time = timeit.default_timer()
-                        segment_size, segment_filename = download_segment_priority(segment_url, 0xff, file_identifier, download)
-                        segment_download_time = timeit.default_timer() - start_time
-                        previous_segment_times.append(segment_download_time)
-                        config_dash.LOG.info("{}: Downloaded segment {}".format(playback_type.upper(), segment_url))
-                    except IOError as e:
-                        config_dash.LOG.error('Unable to save segment %s' % e)
-                        return None
 
-                    tiles_in_segment.append(tile)
-                    segment_size = dp_object.video[current_bitrate].segment_size
+                    if not MS:
+                        config_dash.LOG.info("{}: Downloading file {}".format(playback_type.upper(), segment_url))
+                        
+                        try:
+                            start_time = timeit.default_timer()
+                            segment_size, segment_filename = download_segment_priority(segment_url, priority, file_identifier, download)
+                            segment_download_time = timeit.default_timer() - start_time
+                            previous_segment_times.append(segment_download_time)
+                            config_dash.LOG.info("{}: Downloaded segment {}".format(playback_type.upper(), segment_url))
+                        except IOError as e:
+                            config_dash.LOG.error('Unable to save segment %s' % e)
+                            return None
 
-                    recent_download_sizes.append(segment_size)
-                    segment_files.append(segment_filename)
+                        tiles_in_segment.append(tile)
+                        #segment_size = dp_object.video[current_bitrate].segment_size
 
-                    #update tje JSON information
-                    segment_name = os.path.split(segment_url)[1]
-                    if 'segment_info' not in config_dash.JSON_HANDLE:
-                        config_dash.JSON_HANDLE['segment_info'] = list()
-                    config_dash.JSON_HANDLE['segment_info'].append((segment_name, segment_size, segment_download_time))
+                        recent_download_sizes.append(segment_size)
+                        segment_files.append(segment_filename)
 
-                    total_downloaded += segment_size
-                    config_dash.LOG.info("{} : The total downloaded = {}, segment_size = {}, segment_number = {}".format(
-                                        playback_type.upper(), total_downloaded, segment_size, segment_number))
+                        #update tje JSON information
+                        segment_name = os.path.split(segment_url)[1]
+                        if 'segment_info' not in config_dash.JSON_HANDLE:
+                            config_dash.JSON_HANDLE['segment_info'] = list()
+                        config_dash.JSON_HANDLE['segment_info'].append((segment_name, segment_size, segment_download_time))
 
-                    config_dash.LOG.info('Downloaded {}. Size = {} in {} seconds'.format(
-                                        segment_url, segment_size, str(segment_download_time)))
+
+                        config_dash.LOG.info('Downloaded {}. Size = {} in {} seconds'.format(
+                                            segment_url, segment_size, str(segment_download_time)))
+
+                        total_downloaded += segment_size
+                        config_dash.LOG.info("{} : The total downloaded = {}, segment_size = {}, segment_number = {}".format(
+                                            playback_type.upper(), total_downloaded, segment_size, segment_number))
+
+                    else: 
+                        #download_thread(playback_type, segment_url, priority, tiles_in_segment, recent_download_sizes, segment_files)
+                        t = Thread(target=download_thread, daemon=True,
+                                    args=(playback_type, tile, segment_url, priority, file_identifier, download, 
+                                            previous_segment_times, tiles_in_segment, download_sizes_t, segment_files))
+                        threads.append(t)
+
+            if len(threads) > 0:
+                for t in threads:
+                    t.start()
+
+                for t in threads:
+                    t.join()
+
+                for size in download_sizes_t:
+                    total_downloaded += size
+
+                config_dash.LOG.info("{} : The total downloaded = {}, segment_size = {}, segment_number = {}".format(
+                                    playback_type.upper(), total_downloaded, segment_size, segment_number))
+
+
 
             if last_segment != segment_number:
                 segment_info = {'playback_length' : video_segment_duration,
@@ -569,7 +638,7 @@ def main():
         return None
 
     #glueConnection.setupFEC(fec, fecConfig)
-    glueConnection.setupPM(QUIC, MP, not NO_KEEP_ALIVE, MS, SCHEDULER, CC)
+    glueConnection.setupPM(QUIC, MP, MS, not NO_KEEP_ALIVE, SCHEDULER, CC)
 
     config_dash.LOG.info('Downloading MPD file %s' % MPD)
     # Retrieve the MPD files for the video

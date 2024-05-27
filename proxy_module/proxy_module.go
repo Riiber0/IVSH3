@@ -11,6 +11,7 @@ import (
 	"os"
 	"strconv"
 	"time"
+	"fmt"
 
 	"golang.org/x/net/http2"
 
@@ -149,6 +150,11 @@ func DownloadSegmentPriority(segmentURL string, segmentPriority uint8) int {
 	rsp.Body.Close()
 	recvBytes += uint64(body.Len())
 
+
+	if !keepAlive {
+		h2client = nil
+	}
+
 	return body.Len()
 }
 
@@ -191,7 +197,7 @@ func createRemoteClient() {
 			}
 		}
 
-		//log.Printf("%s created http2 QUIC client (MP: %t, %s)", logTag, useMP, quic.SchedulerAlgorithm)
+		fmt.Printf("%s created http2 QUIC client (MP: %t, %t)", logTag, useMP, useMS)
 	} else {
 		// Use a HTTP/2.0 connection via TLS
 		hclient = &http.Client{}

@@ -23,10 +23,10 @@ lib.DownloadSegmentPriority.argtypes = [GoString, c_ubyte]
 import time
 last_time = None
 
-def setupPM(useQUIC, useMP, keepAlive, useMS, schedulerName, congestionControl='cubic'):
+def setupPM(useQUIC, useMP, useMS, keepAlive, schedulerName, congestionControl='cubic'):
     scheduler = GoString(schedulerName.encode('ascii'), len(schedulerName))
     cc = GoString(congestionControl.encode('ascii'), len(congestionControl))
-    lib.ClientSetup(useQUIC, useMP, keepAlive, useMS, scheduler, cc)
+    lib.ClientSetup(useQUIC, useMP, useMS, keepAlive, scheduler, cc)
 
 def closeConnection():
     lib.CloseConnection()
