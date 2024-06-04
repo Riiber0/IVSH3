@@ -336,11 +336,10 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
             if BITRATE is not None:
                 pass
 
-            elif playback_type.upper() == "BASIC":
-                if last_segment != segment_number:
-                    current_bitrate, average_dwn_time = basic_dash3.basic_dash3(
-                    segment_number, bitrates, average_dwn_time, recent_download_sizes, 
-                    previous_segment_times, current_bitrate)
+            elif playback_type.upper() == "BASIC" and last_segment != segment_number:
+                current_bitrate, average_dwn_time = basic_dash3.basic_dash3(
+                segment_number, bitrates, average_dwn_time, recent_download_sizes, 
+                previous_segment_times, current_bitrate)
 
             #TODO stream priority
             priority = 0xff
@@ -361,7 +360,7 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
                         
                         try:
                             start_time = timeit.default_timer()
-                            segment_size, segment_filename = download_segment_priority(segment_url, priority, file_identifier, download)
+                            segment_size, segment_filename = download_segment(segment_url, file_identifier, download)
                             segment_download_time = timeit.default_timer() - start_time
                             previous_segment_times.append(segment_download_time)
                             config_dash.LOG.info("{}: Downloaded segment {}".format(playback_type.upper(), segment_url))
@@ -403,13 +402,14 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
                 for t in threads:
                     t.join()
 
-                for size in download_sizes_t:
-                    total_downloaded += size
+                recent_download_sizes += download_sizes_t
+                total_downloaded += sum(download_sizes_t)
 
                 config_dash.LOG.info("{} : The total downloaded = {}, segment_size = {}, segment_number = {}".format(
                                     playback_type.upper(), total_downloaded, segment_size, segment_number))
 
-
+            if NO_KEEP_ALIVE:
+                glueConnection.closeConnection()
 
             if last_segment != segment_number:
                 segment_info = {'playback_length' : video_segment_duration,

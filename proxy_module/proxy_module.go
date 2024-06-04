@@ -76,12 +76,11 @@ func CloseConnection() {
 		hclient.CloseIdleConnections()
 		hclient = nil
 	} else if h2client!= nil {
-		h2client = nil
+		//h2client = nil
 	}
-	roundTripper = nil
-	/*if roundTripper != nil {
+	if roundTripper != nil {
 		roundTripper.Close()
-	}*/
+	}
 }
 
 //export DownloadSegment
@@ -108,11 +107,6 @@ func DownloadSegment(segmentURL string) int {
 	}
 	rsp.Body.Close()
 	recvBytes += uint64(body.Len())
-	
-	if !keepAlive {
-		hclient.CloseIdleConnections()
-		hclient = nil
-	}
 
 	return body.Len()
 }
@@ -149,11 +143,6 @@ func DownloadSegmentPriority(segmentURL string, segmentPriority uint8) int {
 	}
 	rsp.Body.Close()
 	recvBytes += uint64(body.Len())
-
-
-	if !keepAlive {
-		h2client = nil
-	}
 
 	return body.Len()
 }
