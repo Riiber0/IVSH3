@@ -120,7 +120,7 @@ func DownloadSegmentPriority(segmentURL string, segmentPriority uint8) int {
 
 	// Set stream priority
 	priority := &http2.PriorityParam{
-		Weight:    0xff,
+		Weight:    segmentPriority,
 		StreamDep: 0x0,
 		Exclusive: false,
 	}

@@ -1,0 +1,1 @@
+python3.6 dash_client.py -m "https://10.0.3.2:4242/dash_tiled.mpd" -q -mp -tr PERFPREDICT -tg -p BASIC -ms -nka >> basic-pred-ms-b

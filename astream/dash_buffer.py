@@ -6,6 +6,7 @@ import csv
 import os
 import config_dash
 from stop_watch import StopWatch
+from TilePriority import linePriority
 
 # Durations in seconds
 PLAYER_STATES = ['INITIALIZED', 'INITIAL_BUFFERING', 'PLAY',
@@ -15,7 +16,7 @@ EXIT_STATES = ['STOP', 'END']
 
 class DashPlayer:
     """ DASH buffer class """
-    def __init__(self, video_length, segment_duration):
+    def __init__(self, video_length, segment_duration, tp):
         config_dash.LOG.info("Initializing the Buffer")
         self.player_thread = None
         self.playback_start_time = None
@@ -50,7 +51,11 @@ class DashPlayer:
         self.buffer_log_file = config_dash.BUFFER_LOG_FILENAME
         # 360 variables
         self.tile_getter = None
+        self.tiles_in_segment = None
         self.needed_tiles = None
+        self.unneeded_tiles = None
+        self.TP = tp
+        self.emergency_tiles = []
         config_dash.LOG.info("VideoLength={},segmentDuration={},MaxBufferSize={},InitialBuffer(secs)={},"
                              "BufferAlph(secs)={},BufferBeta(secs)={}".format(self.playback_duration,
                                                                               self.segment_duration,
@@ -182,7 +187,13 @@ class DashPlayer:
                                 play_segment['bitrate'], self.playback_timer.time()))
 
                         #tile code
-                        segment, self.needed_tiles = self.tile_getter.get_tiles()
+                        segment, self.tiles_in_segment = self.tile_getter.get_tiles()
+
+                        if self.TP:
+                            self.unneeded_tiles, self.needed_tiles = linePriority(self.tiles_in_segment)
+                        else:
+                            self.needed_tiles = self.tiles_in_segment
+
                         if not set(play_segment['tiles_in_segment']).issuperset(self.needed_tiles):
                             config_dash.LOG.info("Entering buffering stage after {} seconds of playback".format( self.playback_timer.time()))
                             self.playback_timer.pause()
@@ -190,7 +201,10 @@ class DashPlayer:
                             config_dash.JSON_HANDLE['playback_info']['interruptions']['count'] += 1
 
                             while not set(play_segment['tiles_in_segment']).issuperset(self.needed_tiles):
+                                self.emergency_tiles = list(set(self.needed_tiles) - set(play_segment['tiles_in_segment']))
                                 time.sleep(0.01)
+
+                            self.emergency_tiles = []
 
                             interruption_end = time.time()
                             interruption = interruption_end - interruption_start

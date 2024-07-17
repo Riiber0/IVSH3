@@ -41,6 +41,7 @@ import time
 import pandas as pd
 from tile_delivery import *
 from threading import Thread
+from TilePriority import linePriority
 
 # Constants
 DEFAULT_PLAYBACK = 'BASIC'
@@ -244,7 +245,7 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
     """
     glueConnection.startLogging(1000)
     # Initialize the DASH buffer
-    dash_player = dash_buffer.DashPlayer(dp_object.playback_duration, video_segment_duration)
+    dash_player = dash_buffer.DashPlayer(dp_object.playback_duration, video_segment_duration, TP)
     dash_player.start()
     print(dp_object.playback_duration)
     # A folder to save the segments in
@@ -297,13 +298,15 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
     netflix_state = "INITIAL"
     # tile variables
     total_tiles = len(dp_list[segment_count][bitrate])
-    tiles = None
+    tiles = []
     tiles_in_segment = []
     last_segment = -1
     pre_ulrs_dict = None # (tile : [bitrate, stream_priotyt]), created by ABR
     urls_dict = None # (file_url : stream_prioryt), created after pre_url_dict mapping
+    emergency_flag = False
     #tread variables
-    t_list = []
+        #t_list = []
+    threads = []
 
     # tile reader
     if TILE_READER == "NARROW":
@@ -327,8 +330,11 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
     while dash_player.playback_state not in dash_buffer.EXIT_STATES:
         if segment_number <= len(dp_list.keys()):
 
-            segment_number, tiles = tileReader.get_tiles()
-            path_to_tiles = dp_list[segment_number][current_bitrate]
+            segment_number, n_tiles = tileReader.get_tiles()
+
+            for tile in n_tiles:
+                if tile not in tiles:
+                    tiles.append(tile)
 
             if last_segment != segment_number:
                 tiles_in_segment = []
@@ -341,17 +347,34 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
                 segment_number, bitrates, average_dwn_time, recent_download_sizes, 
                 previous_segment_times, current_bitrate)
 
-            #TODO stream priority
-            priority = 0xff
+            # priority = 0xff
+            if TP:
+                lowP, highP = linePriority(tiles)
 
             if MS:
                 threads = []
                 download_sizes_t = []
 
+            if dash_player.current_segment != None and len(dash_player.emergency_tiles) > 0:
+                segment_number = dash_player.current_segment['segment_number']
+                tiles = dash_player.emergency_tiles
+                emergency_flag = True
+
             for tile in tiles:
-                # print("{} {} {}".format(segment_number, current_bitrate, tile))
-                if not downloaded_tiles[segment_number][current_bitrate][tile]:
-                    downloaded_tiles[segment_number][current_bitrate][tile] = True
+                # print("{} {} {}".format(segment_number, bitrate, tile))
+
+                if TP and tile in lowP and bitrates.index(current_bitrate) > 0:
+                    priority = 0x00
+                    bitrate = bitrates[bitrates.index(current_bitrate) - 1]
+
+                else:
+                    priority = 0xff
+                    bitrate = current_bitrate
+
+                path_to_tiles = dp_list[segment_number][bitrate]
+
+                if not downloaded_tiles[segment_number][bitrate][tile]:
+                    downloaded_tiles[segment_number][bitrate][tile] = True
 
                     segment_url = urllib.parse.urljoin(domain, path_to_tiles[tile])
 
@@ -369,7 +392,7 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
                             return None
 
                         tiles_in_segment.append(tile)
-                        #segment_size = dp_object.video[current_bitrate].segment_size
+                        #segment_size = dp_object.video[bitrate].segment_size
 
                         recent_download_sizes.append(segment_size)
                         segment_files.append(segment_filename)
@@ -410,6 +433,10 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
 
             if NO_KEEP_ALIVE:
                 glueConnection.closeConnection()
+
+            if emergency_flag:
+                dash_player.current_segment['tiles_in_segment'].extend(tiles)
+                emergency_flag = False
 
             if last_segment != segment_number:
                 segment_info = {'playback_length' : video_segment_duration,
@@ -602,12 +629,15 @@ def create_arguments(parser):
     parser.add_argument('-tg', '--TILE_GETTER', action='store_true', 
                         default=False,
                         help="TileDelivery object for buffer")
-    parser.add_argument('-pt', '--PREDICT_TIME', 
+    parser.add_argument('-pt', '--PREDICT-TIME', 
                         default=0.5,
                         help="Prediction time")
     parser.add_argument('-ms', '--MS', action='store_true', 
                         default=False,
                         help="Use mult-stream")
+    parser.add_argument('-tp', '--TP', action='store_true', 
+                        default=False,
+                        help="Priority for tiles in the center")
 
 
 def main():
