@@ -173,7 +173,7 @@ def download_thread(playback_type, tile, segment_url, priority, file_identifier,
         config_dash.LOG.info("{}: Downloaded segment {}".format(playback_type.upper(), segment_url))
     except IOError as e:
         config_dash.LOG.error('Unable to save segment %s' % e)
-        return None
+        sys.exit()
 
     tiles_in_segment.append(tile)
     #segment_size = dp_object.video[current_bitrate].segment_size
@@ -304,6 +304,7 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
     pre_ulrs_dict = None # (tile : [bitrate, stream_priotyt]), created by ABR
     urls_dict = None # (file_url : stream_prioryt), created after pre_url_dict mapping
     emergency_flag = False
+    total_segment_size = None
     #tread variables
         #t_list = []
     threads = []
@@ -327,6 +328,7 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
 
     # waiting for the player to finish playing
     segment_number = dp_object.video[current_bitrate].start
+    downloaded_flag = False
     while dash_player.playback_state not in dash_buffer.EXIT_STATES:
         if segment_number <= len(dp_list.keys()):
 
@@ -347,6 +349,15 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
                 segment_number, bitrates, average_dwn_time, recent_download_sizes, 
                 previous_segment_times, current_bitrate)
 
+            elif playback_type.upper() == 'SMART' and last_segment != segment_number:
+                if not weighted_mean_object:
+                    weighted_mean_object = WeightedMean(config_dash.SARA_SAMPLE_COUNT)
+                    config_dash.LOG.debug("Initializing the weighted Mean object")
+
+                current_bitrate, delay = weighted_dash.weighted_dash(bitrates, dash_player, 
+                        weighted_mean_object.weighted_mean_rate, 
+                            current_bitrate, get_segment_sizes(dp_object, segment_number))
+
             # priority = 0xff
             if TP:
                 lowP, highP = linePriority(tiles)
@@ -360,6 +371,7 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
                 tiles = dash_player.emergency_tiles
                 emergency_flag = True
 
+            total_segment_size = 0
             for tile in tiles:
                 # print("{} {} {}".format(segment_number, bitrate, tile))
 
@@ -375,6 +387,7 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
 
                 if not downloaded_tiles[segment_number][bitrate][tile]:
                     downloaded_tiles[segment_number][bitrate][tile] = True
+                    downloaded_flag = True
 
                     segment_url = urllib.parse.urljoin(domain, path_to_tiles[tile])
 
@@ -408,8 +421,7 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
                                             segment_url, segment_size, str(segment_download_time)))
 
                         total_downloaded += segment_size
-                        config_dash.LOG.info("{} : The total downloaded = {}, segment_size = {}, segment_number = {}".format(
-                                            playback_type.upper(), total_downloaded, segment_size, segment_number))
+                        total_segment_size += segment_size
 
                     else: 
                         #download_thread(playback_type, segment_url, priority, tiles_in_segment, recent_download_sizes, segment_files)
@@ -419,17 +431,29 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
                         threads.append(t)
 
             if len(threads) > 0:
+                downloaded_flag = True
+                start_time = timeit.default_timer()
                 for t in threads:
                     t.start()
 
                 for t in threads:
                     t.join()
 
-                recent_download_sizes += download_sizes_t
-                total_downloaded += sum(download_sizes_t)
+                segment_download_time = timeit.default_timer() - start_time
 
+                recent_download_sizes += download_sizes_t
+                total_segment_size = sum(download_sizes_t)
+                total_downloaded += total_segment_size
+
+            if playback_type.upper() == 'SMART' and weighted_mean_object and last_segment != segment_number:
+                print(get_segment_sizes(dp_object, segment_number))
+                weighted_mean_object.update_weighted_mean(get_segment_sizes(dp_object, segment_number)[current_bitrate], segment_download_time)
+
+
+            if downloaded_flag:
                 config_dash.LOG.info("{} : The total downloaded = {}, segment_size = {}, segment_number = {}".format(
                                     playback_type.upper(), total_downloaded, segment_size, segment_number))
+                downloaded_flag = False
 
             if NO_KEEP_ALIVE:
                 glueConnection.closeConnection()
@@ -471,7 +495,7 @@ def get_segment_sizes(dp_object, segment_number):
     :param segment_number:
     :return:
     """
-    segment_sizes = {bitrate: dp_object.video[bitrate].segment_sizes[segment_number] for bitrate in dp_object.video}
+    segment_sizes = {bitrate: dp_object.video[bitrate].segment_size for bitrate in dp_object.video}
     config_dash.LOG.debug("The segment sizes of {} are {}".format(segment_number, segment_sizes))
     return segment_sizes
 
