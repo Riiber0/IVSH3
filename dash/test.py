@@ -1,4 +1,5 @@
 import os
+import subprocess
 
 #os.system("route")
 
@@ -42,5 +43,6 @@ os.system("sudo ip route add default scope global nexthop via 127.0.0.1 dev ingr
 #os.system("ifconfig")
 #os.system("ping 10.0.2.15")
 #os.system("iperf3 -c 127.0.0.1")
-os.system("curl -k https://10.0.2.15:4242/dash_tiled.mpd")
+#os.system("curl -k https://10.0.2.15:4242/dash_tiled.mpd")
+subprocess.Popen(["/home/vagrant/workspace/Dash360-sa-ecf/dash/caddy", "-conf" ,"/home/vagrant/workspace/Dash360-sa-ecf/dash/Caddyfile"], shell=False)
 

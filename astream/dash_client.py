@@ -55,6 +55,8 @@ PLAYBACK = DEFAULT_PLAYBACK
 DOWNLOAD = False
 SEGMENT_LIMIT = None
 
+HEAD_TRACE_PATH = "/home/vagrant/workspace/Dash360-sa-ecf/astream/"
+
 #Globals for threads
 total_downloaded = None
 
@@ -311,15 +313,15 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
 
     # tile reader
     if TILE_READER == "NARROW":
-        tileReader = NarrowReader(dash_player.playback_timer, 'move_alert.csv', segment_duration)
+        tileReader = NarrowReader(dash_player.playback_timer, HEAD_TRACE_PATH+'move_alert.csv', segment_duration)
     elif TILE_READER == "ALL":
         tileReader = AllReader(dash_player.playback_timer, total_tiles, segment_duration)
     elif TILE_READER.upper() == "PERFPREDICT":
-        tileReader = PerfPredict(dash_player.playback_timer, 'move_alert.csv', segment_duration, PREDICT_TIME)
+        tileReader = PerfPredict(dash_player.playback_timer, HEAD_TRACE_PATH+'move_alert.csv', segment_duration, PREDICT_TIME)
 
     #tile getter
     if TILE_GETTER or TILE_READER == "PERFPREDICT":
-        dash_player.tile_getter = NarrowReader(dash_player.playback_timer, 'move_alert.csv', segment_duration)
+        dash_player.tile_getter = NarrowReader(dash_player.playback_timer, HEAD_TRACE_PATH+'move_alert.csv', segment_duration)
         dash_player.tile_getter.start()
     else:
         dash_player.tile_getter = tileReader

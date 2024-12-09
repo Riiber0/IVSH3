@@ -1,1 +1,4 @@
-python3.6 dash_client.py -m "https://10.0.3.2:4242/dash_tiled.mpd" -q -mp -tr PERFPREDICT -tg -p BASIC -ms -tp -nka >> basic-pred-ms-nb
+cdate=$(date "+%Y-%m-%d_%H-%M-%S").txt
+filename=$"$(basename "$0")-$cdate"
+client_path=$"/home/vagrant/workspace/Dash360-sa-ecf/astream/dash_client.py"
+python3.6 $client_path -m "https://10.0.2.15:4242/dash_tiled.mpd" -q -tr PERFPREDICT -tg -p $1 -ms -tp -nka >> $filename
