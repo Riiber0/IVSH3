@@ -164,14 +164,14 @@ def download_segment_priority(segment_url, priority, dash_folder, download=False
     return segment_size, segment_name
 
 def download_thread(playback_type, tile, segment_url, priority, file_identifier, download,
-                    previous_segment_times, tiles_in_segment, download_sizes_t, segment_files):
+                    previous_download_times, tiles_in_segment, download_sizes_t, segment_files):
     config_dash.LOG.info("{}: Downloading file {}".format(playback_type.upper(), segment_url))
     
     try:
         start_time = timeit.default_timer()
         segment_size, segment_filename = download_segment_priority(segment_url, priority, file_identifier, download)
         segment_download_time = timeit.default_timer() - start_time
-        previous_segment_times.append(segment_download_time)
+        previous_download_times.append(segment_download_time)
         config_dash.LOG.info("{}: Downloaded segment {}".format(playback_type.upper(), segment_url))
     except IOError as e:
         config_dash.LOG.error('Unable to save segment %s' % e)
@@ -285,8 +285,6 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
     average_dwn_time = 0
     segment_files = []
     # For basic adaptation
-    previous_segment_times = []
-    recent_download_sizes = []
     weighted_mean_object = None
     current_bitrate = bitrates[0]
     previous_bitrate = None
@@ -299,17 +297,23 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
     average_segment_sizes = netflix_rate_map = None
     netflix_state = "INITIAL"
     # tile variables
+    recent_download_sizes = []
+    previous_download_times = []
     total_tiles = len(dp_list[segment_count][bitrate])
     tiles = []
     tiles_in_segment = []
-    last_segment = -1
     pre_ulrs_dict = None # (tile : [bitrate, stream_priotyt]), created by ABR
     urls_dict = None # (file_url : stream_prioryt), created after pre_url_dict mapping
     emergency_flag = False
+    # segment variables
+    previous_segments_times = []
     total_segment_size = None
+    previous_segments_sizes = []
+    last_segment = -1
     #tread variables
     threads_highP = []
     threads_lowP = []
+    download_sizes_t = []
 
     # tile reader
     if TILE_READER == "NARROW":
@@ -349,7 +353,7 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
 
             elif playback_type.upper() == "BASIC":
                 current_bitrate, average_dwn_time = basic_dash3.basic_dash3(
-                segment_number, bitrates, average_dwn_time, recent_download_sizes, 
+                segment_number, bitrates, average_dwn_time, precious_segments_sizes, 
                 previous_segment_times, current_bitrate)
 
             elif playback_type.upper() == 'SMART':
@@ -364,8 +368,10 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
             if TP:
                 lowP, highP = linePriority(tiles)
 
+            """
             if OUTER_ZONE:
                 lowP += outer_zone_finder(tiles)
+            """
 
             if dash_player.current_segment != None and len(dash_player.emergency_tiles) > 0:
                 segment_number = dash_player.current_segment['segment_number']
@@ -376,22 +382,19 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
             for tile in tiles:
                 # print("{} {} {}".format(segment_number, bitrate, tile))
 
-
-                path_to_tiles = dp_list[segment_number][bitrate]
-
                 if not downloaded_tiles[segment_number][bitrate][tile]:
-                    downloaded_tiles[segment_number][bitrate][tile] = True
                     download_flag = True
-
-                    segment_url = urllib.parse.urljoin(domain, path_to_tiles[tile])
 
                     if TP and tile in lowP and bitrates.index(current_bitrate) > 0:
                         priority = 0x00
                         bitrate = bitrates[bitrates.index(current_bitrate) - 1]
+                        
+                        path_to_tiles = dp_list[segment_number][bitrate]
+                        segment_url = urllib.parse.urljoin(domain, path_to_tiles[tile])
 
                         t = Thread(target=download_thread, daemon=True,
                                     args=(playback_type, tile, segment_url, priority, file_identifier, download, 
-                                        previous_segment_times, tiles_in_segment, download_sizes_t, segment_files))
+                                        previous_download_times, tiles_in_segment, download_sizes_t, segment_files))
 
                         threads_lowP.append(t)
 
@@ -399,11 +402,16 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
                         priority = 0xff
                         bitrate = current_bitrate
 
+                        path_to_tiles = dp_list[segment_number][bitrate]
+                        segment_url = urllib.parse.urljoin(domain, path_to_tiles[tile])
+
                         t = Thread(target=download_thread, daemon=True,
                                     args=(playback_type, tile, segment_url, priority, file_identifier, download, 
-                                        previous_segment_times, tiles_in_segment, download_sizes_t, segment_files))
+                                        previous_download_times, tiles_in_segment, download_sizes_t, segment_files))
 
                         threads_highP.append(t)
+
+                    downloaded_tiles[segment_number][bitrate][tile] = True
 
             if download_flag:
                 download_flag = True
@@ -422,12 +430,22 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
                                     'segment_number' : segment_number,
                                     'tiles_in_segment' : tiles_in_segment}
 
+                    last_segment = segment_number
+                    dash_player.write(segment_info)
+
                 for t in threads_lowP:
                     t.join()
 
+                previous_segments_times.append(segment_download_time)
+
                 recent_download_sizes += download_sizes_t
                 total_segment_size = sum(download_sizes_t)
+                previous_segments_sizes.append(total_segment_size)
                 total_downloaded += total_segment_size
+
+                download_sizes_t = []
+                threads_highP = []
+                threads_lowP = []
 
             if playback_type.upper() == 'SMART' and weighted_mean_object and last_segment != segment_number:
                 #print(get_segment_sizes(dp_object, segment_number))
@@ -449,14 +467,12 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
                 last_segment = segment_number
                 dash_player.write(segment_info)
 
-        #old:
-        #segment_number = dash_player.playback_timer.time()//dp_object.video[current_bitrate].segment_duration + 1
-
         if previous_bitrate:
             if previous_bitrate < current_bitrate:
                 config_dash.JSON_HANDLE['playback_info']['up_shifts'] += 1
             elif previous_bitrate > current_bitrate:
                 config_dash.JSON_HANDLE['playback_info']['down_shifts'] += 1
+
             previous_bitrate = current_bitrate
 
 
