@@ -228,6 +228,13 @@ def print_representations(dp_object):
     for bandwidth in dp_object.video:
         print(bandwidth)
 
+def get_segment_tile_buffer(segment_number, dash_player):
+    segment = dash_player.get_segment(segment_number)
+
+    if segment != None:
+        return segment['tiles_in_segment']
+
+    return []
 
 def start_playback_smart(dp_object, domain, playback_type=None, download=False, video_segment_duration=None):
     """ Module that downloads the MPD-FIle and download
@@ -344,8 +351,16 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
                 if tile not in tiles:
                     tiles.append(tile)
 
+            new_tiles = [tile in n_tiles if tile not in tiles]
+
+            if len(new_tiles) > 0:
+                tiles += new_tiles
+
+            else:
+                segment_number += 1
+
             if last_segment != segment_number:
-                tiles_in_segment = []
+                tiles_in_segment = get_segment_tile_buffer(segment_number, dash_player) 
 
             #Bitrate selection
             if BITRATE is not None or last_segment == segment_number:
@@ -424,13 +439,12 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
 
                 segment_download_time = timeit.default_timer() - start_time
 
-                if last_segment != segment_number:
+                if dash_player.segment_exist(segment_number) == None:
                     segment_info = {'playback_length' : video_segment_duration,
                                     'bitrate' : current_bitrate,
                                     'segment_number' : segment_number,
                                     'tiles_in_segment' : tiles_in_segment}
 
-                    last_segment = segment_number
                     dash_player.write(segment_info)
 
                 for t in threads_lowP:
@@ -474,6 +488,8 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
                 config_dash.JSON_HANDLE['playback_info']['down_shifts'] += 1
 
             previous_bitrate = current_bitrate
+
+        last_segment = segment_number
 
 
     glueConnection.stopLogging()
