@@ -68,7 +68,7 @@ RE_BUFFERING_COUNT = 1
 ALPHA_BUFFER_COUNT = 1
 BETA_BUFFER_COUNT = 2
 # Set the size of the buffer in terms of segments. Set to unlimited if 0 or None
-MAX_BUFFER_SIZE = 1
+MAX_BUFFER_SIZE = 4
 
 # ---------------------------------------------------
 # Netflix (Buffer-based) ADAPTATION
@@ -91,3 +91,10 @@ index_rtt_min = None
 index_rtt_avg = None
 index_rtt_max = None
 RTT = False
+
+# ---------------------------------------------------
+# Tiles config
+# ---------------------------------------------------
+
+TILE_LINE_COUNT = 10
+TILE_LINE_SIZE = 20

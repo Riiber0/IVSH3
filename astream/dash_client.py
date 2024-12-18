@@ -41,7 +41,7 @@ import time
 import pandas as pd
 from tile_delivery import *
 from threading import Thread
-from TilePriority import linePriority
+from util import linePriority, outer_zone_finder
 
 # Constants
 DEFAULT_PLAYBACK = 'BASIC'
@@ -236,6 +236,28 @@ def get_segment_tile_buffer(segment_number, dash_player):
 
     return []
 
+def get_segment_bitrate(segment_number, dash_player):
+    segment = dash_player.get_segment(segment_number)
+    
+    return segment['bitrate']
+
+def get_player_segment_number(dash_player):
+    segment= dash_player.current_segment
+    
+    if segment == None:
+        return -1
+
+    else:
+        return segment['segment_number']
+
+def check_segment_in_buffer(segment_number, dash_player):
+    segment = dash_player.get_segment(segment_number)
+
+    if segment == None:
+        return False
+    
+    return True
+
 def start_playback_smart(dp_object, domain, playback_type=None, download=False, video_segment_duration=None):
     """ Module that downloads the MPD-FIle and download
         all the representations of the Module to download
@@ -317,10 +339,13 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
     total_segment_size = None
     previous_segments_sizes = []
     last_segment = -1
+    new_segment = False
     #tread variables
     threads_highP = []
     threads_lowP = []
     download_sizes_t = []
+    #buffer varialbes
+    segment_increase = 0
 
     # tile reader
     if TILE_READER == "NARROW":
@@ -347,24 +372,37 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
 
             segment_number, n_tiles = tileReader.get_tiles()
 
-            for tile in n_tiles:
-                if tile not in tiles:
-                    tiles.append(tile)
+            tiles_in_segment = get_segment_tile_buffer(segment_number, dash_player) 
+            new_tiles = [tile for tile in n_tiles if tile not in tiles_in_segment]
 
-            new_tiles = [tile in n_tiles if tile not in tiles]
+            if segment_number == get_player_segment_number(dash_player):
+                if new_tiles == []:
+                    next_segment = segment_number + segment_increase + 1
+                    if next_segment - get_player_segment_number(dash_player) < config_dash.MAX_BUFFER_SIZE and next_segment < len(dp_list.keys()):
+                        segment_increase += 1
 
-            if len(new_tiles) > 0:
-                tiles += new_tiles
+                    segment_number += segment_increase
+                    tiles_in_segment = get_segment_tile_buffer(segment_number, dash_player) 
+                    new_tiles = [tile for tile in n_tiles if tile not in tiles_in_segment]
+
+                else:
+                    segment_increase = 0
+
+            if not check_segment_in_buffer(segment_number, dash_player):
+                new_segment = True
 
             else:
-                segment_number += 1
+                new_segment = False
 
-            if last_segment != segment_number:
-                tiles_in_segment = get_segment_tile_buffer(segment_number, dash_player) 
+            tiles = tiles_in_segment.copy()
+            tiles += new_tiles
 
             #Bitrate selection
-            if BITRATE is not None or last_segment == segment_number:
+            if BITRATE is not None:
                 pass
+
+            elif not new_segment:
+                current_bitrate = get_segment_bitrate(segment_number, dash_player)
 
             elif playback_type.upper() == "BASIC":
                 current_bitrate, average_dwn_time = basic_dash3.basic_dash3(
@@ -379,17 +417,15 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
                 current_bitrate, delay = weighted_dash.weighted_dash(bitrates, dash_player, 
                         weighted_mean_object.weighted_mean_rate, 
                             current_bitrate, get_segment_sizes(dp_object, segment_number))
-
+                
             if TP:
                 lowP, highP = linePriority(tiles)
 
-            """
             if OUTER_ZONE:
-                lowP += outer_zone_finder(tiles)
-            """
+                lowP += outer_zone_finder(tiles, total_tiles, OUTER_ZONE)
 
             if dash_player.current_segment != None and len(dash_player.emergency_tiles) > 0:
-                segment_number = dash_player.current_segment['segment_number']
+                segment_number = get_player_segment_number(dash_player)
                 tiles = dash_player.emergency_tiles
                 emergency_flag = True
 
@@ -397,16 +433,26 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
             for tile in tiles:
                 # print("{} {} {}".format(segment_number, bitrate, tile))
 
+                if TP and tile in lowP:
+                    priority = 0x00
+
+                    if bitrates.index(current_bitrate) > 0:
+                        bitrate = bitrates[bitrates.index(current_bitrate) - 1]
+
+                    else:
+                        bitrate = current_bitrate
+
+                else:
+                    priority = 0xff
+                    bitrate = current_bitrate
+
                 if not downloaded_tiles[segment_number][bitrate][tile]:
                     download_flag = True
 
-                    if TP and tile in lowP and bitrates.index(current_bitrate) > 0:
-                        priority = 0x00
-                        bitrate = bitrates[bitrates.index(current_bitrate) - 1]
-                        
-                        path_to_tiles = dp_list[segment_number][bitrate]
-                        segment_url = urllib.parse.urljoin(domain, path_to_tiles[tile])
+                    path_to_tiles = dp_list[segment_number][bitrate]
+                    segment_url = urllib.parse.urljoin(domain, path_to_tiles[tile])
 
+                    if TP and tile in lowP:
                         t = Thread(target=download_thread, daemon=True,
                                     args=(playback_type, tile, segment_url, priority, file_identifier, download, 
                                         previous_download_times, tiles_in_segment, download_sizes_t, segment_files))
@@ -414,12 +460,6 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
                         threads_lowP.append(t)
 
                     else:
-                        priority = 0xff
-                        bitrate = current_bitrate
-
-                        path_to_tiles = dp_list[segment_number][bitrate]
-                        segment_url = urllib.parse.urljoin(domain, path_to_tiles[tile])
-
                         t = Thread(target=download_thread, daemon=True,
                                     args=(playback_type, tile, segment_url, priority, file_identifier, download, 
                                         previous_download_times, tiles_in_segment, download_sizes_t, segment_files))
@@ -439,7 +479,7 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
 
                 segment_download_time = timeit.default_timer() - start_time
 
-                if dash_player.segment_exist(segment_number) == None:
+                if new_segment:
                     segment_info = {'playback_length' : video_segment_duration,
                                     'bitrate' : current_bitrate,
                                     'segment_number' : segment_number,
@@ -638,7 +678,7 @@ def start_playback_smart_sequential(dp_object, domain, playback_type=None, downl
                 download_sizes_t = []
 
             if dash_player.current_segment != None and len(dash_player.emergency_tiles) > 0:
-                segment_number = dash_player.current_segment['segment_number']
+                segment_number = get_player_segment_number(dash_player)
                 tiles = dash_player.emergency_tiles
                 emergency_flag = True
 
@@ -932,6 +972,9 @@ def create_arguments(parser):
     parser.add_argument('-tp', '--TP', action='store_true', 
                         default=False,
                         help="Priority for tiles in the center")
+    parser.add_argument('-oz', '--OUTER_ZONE', 
+                        default=False,
+                        help="zone outside FoV")
 
 
 def main():

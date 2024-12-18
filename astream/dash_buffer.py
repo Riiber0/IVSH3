@@ -74,7 +74,7 @@ class DashPlayer:
         else:
             config_dash.LOG.error("Unidentified state: {}".format(state))
 
-    def get_segment(segment_number):
+    def get_segment(self, segment_number):
         for segment in self.buffer.queue:
             if segment['segment_number'] == segment_number:
                 return segment
@@ -245,6 +245,8 @@ class DashPlayer:
                                 play_segment['segment_number'], self.playback_duration))
                     if self.time_limit is not None:
                         if self.playback_timer.time() >= self.time_limit:
+                            self.set_state("STOP")
+                            config_dash.LOG.info("Stopped playback after segment {} at playtime {}".format(
                                 play_segment['segment_number'], self.playback_duration))
 
     def write(self, segment):
