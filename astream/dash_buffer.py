@@ -6,7 +6,7 @@ import csv
 import os
 import config_dash
 from stop_watch import StopWatch
-from TilePriority import linePriority
+from util import linePriority
 
 # Durations in seconds
 PLAYER_STATES = ['INITIALIZED', 'INITIAL_BUFFERING', 'PLAY',

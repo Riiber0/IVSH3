@@ -25,8 +25,10 @@ import ssl
 import timeit
 import http.client
 import io
-import json
 import math
+import json
+import struct
+import subprocess
 from string import ascii_letters, digits
 from argparse import ArgumentParser
 from multiprocessing import Process, Queue
@@ -41,7 +43,7 @@ import time
 import pandas as pd
 from tile_delivery import *
 from threading import Thread
-from util import linePriority, outer_zone_finder
+from util import linePriority, outer_zone_percentage, outer_zone_fixed
 
 # Constants
 DEFAULT_PLAYBACK = 'BASIC'
@@ -126,6 +128,26 @@ def id_generator(id_size=6):
     """
     return 'TEMP_' + ''.join(random.choice(ascii_letters+digits) for _ in range(id_size))
 
+def gelato_get_action(conn, env_info):
+    data_json = json.dumps(d)
+    data_json = data_json.encode('utf-8')
+    json_len = struct.pack("!H", len(data_json))
+    conn.sendall(json_len + data_json)
+
+    json_len_struct = conn.recv(2, socket.MSG_WAITALL)
+    json_len, *_ = struct.unpack("!H", json_len_struct)
+    json_data = self.sock.recv(json_len, socket.MSG_WAITALL)
+    action = json.loads(json_data)
+    action = action['action']
+
+    return action
+
+def gelato_close(conn):
+    d = {'close':True}
+    data = json.dumps(d)
+    data = data.encode('utf-8')
+    json_len = struct.pack("!H", len(data))
+    conn.sendall(json_len + data)
 
 def download_segment(segment_url, dash_folder, download=False):
     """ Module to download the segment with one
@@ -346,6 +368,18 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
     download_sizes_t = []
     #buffer varialbes
     segment_increase = 0
+    #gelato variables
+    conn = None
+    addr =None
+    gelato_p = None
+    gelato_data = {
+            'close': False,
+            'buffer': 0,
+            'cum_rebuf': 0,
+            'sizes': get_sizes_list(),
+            'ssims': get_sssim_list(),
+            'channel_name': 'AStream360'
+    }
 
     # tile reader
     if TILE_READER == "NARROW":
@@ -363,6 +397,24 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
         dash_player.tile_getter = tileReader
 
     tileReader.start()
+
+    #outer zone
+    if OUTER_ZONE == "P":
+        outer_zone_func = outer_zone_percentage
+
+    elif OUTER_ZONE == "F":
+        outer_zone_func = outer_zone_fixed
+
+    #gelato setup
+    if playback_type.upper() == 'GELATO':
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        if os.path.exists("/tmp/socket_test.s"):
+          os.remove("/tmp/socket_test.s")
+
+        sock.bind("/tmp/socket_test.s")
+        gelato_p = subprocess.run(['python', './adaptation/run_gelato.py', './adaptation/model.pt', '/tmp/socket_test.s'])
+        sock.listen()
+        conn, addr = sock.accept()
 
     # waiting for the player to finish playing
     segment_number = dp_object.video[current_bitrate].start
@@ -391,9 +443,6 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
             if not check_segment_in_buffer(segment_number, dash_player):
                 new_segment = True
 
-            else:
-                new_segment = False
-
             tiles = tiles_in_segment.copy()
             tiles += new_tiles
 
@@ -417,12 +466,16 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
                 current_bitrate, delay = weighted_dash.weighted_dash(bitrates, dash_player, 
                         weighted_mean_object.weighted_mean_rate, 
                             current_bitrate, get_segment_sizes(dp_object, segment_number))
+
+            elif playback_type.upper() == 'GELATO':
+                action = gelato_get_action(conn, gelato_data)
+                current_bitrate = bitrates[action]
                 
             if TP:
                 lowP, highP = linePriority(tiles)
 
             if OUTER_ZONE:
-                lowP += outer_zone_finder(tiles, total_tiles, OUTER_ZONE)
+                lowP += outer_zone_func(tiles, total_tiles, OUTER_ZONE_SIZE)
 
             if dash_player.current_segment != None and len(dash_player.emergency_tiles) > 0:
                 segment_number = get_player_segment_number(dash_player)
@@ -461,7 +514,7 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
 
                     else:
                         t = Thread(target=download_thread, daemon=True,
-                                    args=(playback_type, tile, segment_url, priority, file_identifier, download, 
+                                    args=(playback_type, tnew_segmentle_identifier, download, 
                                         previous_download_times, tiles_in_segment, download_sizes_t, segment_files))
 
                         threads_highP.append(t)
@@ -501,7 +554,7 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
                 threads_highP = []
                 threads_lowP = []
 
-            if playback_type.upper() == 'SMART' and weighted_mean_object and last_segment != segment_number:
+            if playback_type.upper() == 'SMART' and weighted_mean_object and new_segment:
                 #print(get_segment_sizes(dp_object, segment_number))
                 weighted_mean_object.update_weighted_mean(get_segment_sizes(dp_object, segment_number)[current_bitrate], segment_download_time)
 
@@ -530,8 +583,11 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
             previous_bitrate = current_bitrate
 
         last_segment = segment_number
+        new_segment = False
 
 
+    if playback_type.upper() == 'GELATO':
+        gelato_close(conn)
     glueConnection.stopLogging()
     glueConnection.closeConnection()
 
@@ -974,7 +1030,10 @@ def create_arguments(parser):
                         help="Priority for tiles in the center")
     parser.add_argument('-oz', '--OUTER_ZONE', 
                         default=False,
-                        help="zone outside FoV")
+                        help="zone outside FoV type")
+    parser.add_argument('-ozs', '--OUTER_ZONE_SIZE', 
+                        default=0,
+                        help="zone outside FoV size")
 
 
 def main():
