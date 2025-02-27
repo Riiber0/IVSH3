@@ -42,8 +42,11 @@ for bitrate in dp_object.video:
 
             dp_list[segment_count][bitrate][tile_id] = segment_url
 
-for seg in dp_list:
-    print(seg)
-    for bitrate in dp_list[segment_count]:
-        print(bitrate)
-        print(len(dp_list[segment_count][bitrate]))
+ssims = dict()
+sizes = dict()
+for bitrate in dp_list[segment_count]:
+    ssims[bitrate] = dp_object.video[bitrate].ssim
+    sizes[bitrate] = dp_object.video[bitrate].segment_size/1000000
+
+print(ssims)
+print(sizes)

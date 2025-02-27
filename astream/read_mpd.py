@@ -71,6 +71,7 @@ class MediaObject(object):
         self.initialization = None
         self.base_url = None
         self.url_list = list()
+        self.ssim = None
 
 
 class DashPlayback:
@@ -319,6 +320,7 @@ def read_mpd(mpd_file, dashplayback, bitratefilter = None):
                         media_object[bandwidth].initialization = media_object[bandwidth].base_url 
                         media_object[bandwidth].segment_size = segment_duration * bandwidth / timescale
                         media_object[bandwidth].segment_duration = video_segment_duration
+                        media_object[bandwidth].ssim = representation.attrib['ssim']
 
                     new_id = int(representation_id.split('_')[1])
                     bitrate_id = int(representation_id.split('_')[0])

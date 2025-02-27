@@ -50,6 +50,8 @@ class DashPlayer:
         self.current_segment = None
         self.buffer_log_file = config_dash.BUFFER_LOG_FILENAME
         # 360 variables
+        self.rebuf = 0
+        self.rebuf_lock = threading.Lock()
         self.tile_getter = None
         self.tiles_in_segment = None
         self.needed_tiles = None
@@ -73,6 +75,20 @@ class DashPlayer:
             self.playback_state_lock.release()
         else:
             config_dash.LOG.error("Unidentified state: {}".format(state))
+
+    def get_buffer_length(self):
+        self.buffer_length_lock.acquire()
+        buffer_length = self.buffer_length
+        self.buffer_length_lock.release()
+
+        return buffer_length
+
+    def get_rebuf(self):
+        self.rebuf_lock.acquire()
+        rebuf = self.rebuf
+        self.rebuf_lock.release()
+
+        return rebuf
 
     def get_segment(self, segment_number):
         for segment in self.buffer.queue:
@@ -144,6 +160,9 @@ class DashPlayer:
                             })
                             config_dash.JSON_HANDLE['playback_info']['interruptions']['total_duration'] += interruption
                             config_dash.LOG.info("Duration of interruption = {}".format(interruption))
+                            self.rebuf_lock.acquire()
+                            self.rebuf += interruption
+                            self.rebuf_lock.release()
                             interruption_start = None
                         self.set_state("PLAY")
                         self.log_entry("Buffering-Play")
@@ -215,6 +234,10 @@ class DashPlayer:
 
                             interruption_end = time.time()
                             interruption = interruption_end - interruption_start
+
+                            self.rebuf_lock.acquire()
+                            self.rebuf += interruption
+                            self.rebuf_lock.release()
 
                             config_dash.JSON_HANDLE['playback_info']['interruptions']['events'].append({
                                 "timeframe": (interruption_start, interruption_end),

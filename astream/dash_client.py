@@ -330,6 +330,12 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
                 dp_list[segment_count][bitrate][tile_id] = segment_url
                 downloaded_tiles[segment_count][bitrate][tile_id] = False
 
+    ssims = dict()
+    sizes = dict()
+    for bitrate in dp_list[segment_count]:
+        ssims[bitrate] = dp_object.video[bitrate].ssim
+        sizes[bitrate] = dp_object.video[bitrate].segment_size/1000000
+
     bitrates = list(dp_object.video.keys())
     bitrates.sort()
     print(bitrates)
@@ -373,11 +379,10 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
     addr =None
     gelato_p = None
     gelato_data = {
-            'close': False,
             'buffer': 0,
             'cum_rebuf': 0,
-            'sizes': get_sizes_list(),
-            'ssims': get_sssim_list(),
+            'sizes': list(sizes.values()),
+            'ssims': list(ssims.values()),
             'channel_name': 'AStream360'
     }
 
@@ -557,6 +562,17 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
             if playback_type.upper() == 'SMART' and weighted_mean_object and new_segment:
                 #print(get_segment_sizes(dp_object, segment_number))
                 weighted_mean_object.update_weighted_mean(get_segment_sizes(dp_object, segment_number)[current_bitrate], segment_download_time)
+
+            elif playback_type.upper() == 'SMART' and new_segment:
+                gelato_data = {
+                        'buffer': dash_player.get_buffer_length(),
+                        'cum_rebuf': dash_player.get_rebuf(),
+                        'past_chunk':{
+                            'delay': segment_download_time
+                            'ssim': ssims[bitrate]
+                            'size': sizes[bitrate]
+                        }
+                }
 
 
             if download_flag:
