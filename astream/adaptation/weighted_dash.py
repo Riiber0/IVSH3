@@ -18,7 +18,7 @@ def weighted_dash(bitrates, dash_player, weighted_dwn_rate, curr_bitrate, next_s
     delay = 0
     next_bitrate = None
     #available_video_segments = dash_player.buffer.qsize() - dash_player.initial_buffer
-    available_video_segments = dash_player.buffer.qsize() + 1
+    available_video_segments = dash_player.buffer.qsize() + dash_player.initial_buffer
     # If the buffer is less that the Initial buffer, playback remains at th lowest bitrate
     # i.e dash_buffer.current_buffer < dash_buffer.initial_buffer
     available_video_duration = available_video_segments * dash_player.segment_duration

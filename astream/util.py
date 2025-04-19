@@ -1,4 +1,5 @@
 import config_dash
+import pandas as pd
 
 def get_tile_matriz(tileList):
     tileMatriz =  {}
@@ -17,7 +18,11 @@ def get_tile_matriz(tileList):
 
     return tileMatriz, lineCount
 
-def linePriority(tileList):
+def linePriority(tileList_original):
+    if not isinstance(tileList_original, list):
+        tileList = [int(tile) for tile in tileList_original.dropna()]
+    else:
+        tileList = tileList_original
 
     tileMatriz =  {}
     lineCount = -1

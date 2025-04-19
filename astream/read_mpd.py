@@ -85,6 +85,7 @@ class DashPlayback:
         self.playback_duration = None
         self.audio = dict()
         self.video = dict()
+        self.ssims = dict()
 
 
 def get_url_list(media, segment_duration,  playback_duration, bitrate):
@@ -288,7 +289,13 @@ def read_mpd(mpd_file, dashplayback, bitratefilter = None):
                     segment_list = representation[0]
                     initialization = segment_list[0]
                     base_urls[representation.attrib['id']] = '' + initialization.attrib['sourceURL']
+                    segment_number = 1
+                    for segment in segment_list[1:]:
+                        if segment_number not in dashplayback.ssims.keys(): 
+                            dashplayback.ssims[segment_number] = dict()
 
+                        dashplayback.ssims[segment_number][int(representation.attrib['bandwidth'])] = float(segment.attrib['ssim'])
+                        segment_number += 1
 
         for adaptation_set in child_period:
             if not adaptation_set.attrib['par'] == '16:9': # tile

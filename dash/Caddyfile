@@ -6,7 +6,7 @@
 
 # Unsecure listener for debugging purposes
 http://10.0.2.15:4040 {
-    root video/
+    root video_1s/
     log stdout
 }
 

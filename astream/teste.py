@@ -2,51 +2,30 @@ import io
 import read_mpd
 from configure_log_file import configure_log_file
 from collections import defaultdict
+import conn as glueConnection
+import subprocess
 
-"""
-class MediaObject(object):
-    def __init__(self):
-        self.min_buffer_time = None
-        self.start = None
-        self.timescale = None
-        self.segment_duration = None
-        self.initialization = None
-        self.base_url = None
-        self.url_list = list()
-"""
 
-configure_log_file(playback_type='basic')
-mpd_file = open('dash_tiled.mpd', 'rb')
-dp_object = read_mpd.DashPlayback()
-dp_object, video_segment_duration = read_mpd.read_mpd(mpd_file, dp_object, None)
+glueConnection.setupLib(False)
+glueConnection.setupPM(True, True, False, False, 'lowRTT', 'olia')
 
-dp_list = dict()
+segment_url = 'https://10.0.2.15:4242/bulk_file'
 
-for bitrate in dp_object.video:
-    # Getting the URL list for each bitrate
-    dp_object.video[bitrate] = read_mpd.get_url_list(dp_object.video[bitrate], video_segment_duration,
-                                                     dp_object.playback_duration, bitrate)
+print('command')
 
-    for tile_id in dp_object.video[bitrate].url_list:
-        media_urls = dp_object.video[bitrate].url_list[tile_id]
+#subprocess.run(['sudo', 'bash', '/home/vagrant/workspace/Dash360-sa-ecf/astream/setup_wifi_route.sh'])
+#subprocess.run(["cat", "/etc/iproute2/rt_tables"])
 
-        for segment_count, segment_url in enumerate(media_urls, dp_object.video[bitrate].start):
-            if segment_count not in dp_list.keys():
-                dp_list[segment_count] = dict()
+print('ip route show table local')
+subprocess.run(['ip', 'route', 'show', 'table', 'local'])
+print('ip route show table main')
+subprocess.run(['ip', 'route', 'show', 'table', 'main'])
+print('defalt')
+subprocess.run(['ip', 'route', 'show', 'table', 'default'])
+print('unspec')
+subprocess.run(['ip', 'route', 'show', 'table', 'unspec'])
 
-            if bitrate not in dp_list[segment_count].keys():
-                dp_list[segment_count][bitrate] = dict()
+subprocess.run(['traceroute', '10.0.2.15'])
+segment_size = glueConnection.download_segment_PM(segment_url)
 
-            if tile_id not in dp_list[segment_count][bitrate].keys():
-                dp_list[segment_count][bitrate][tile_id] = dict()
-
-            dp_list[segment_count][bitrate][tile_id] = segment_url
-
-ssims = dict()
-sizes = dict()
-for bitrate in dp_list[segment_count]:
-    ssims[bitrate] = dp_object.video[bitrate].ssim
-    sizes[bitrate] = dp_object.video[bitrate].segment_size/1000000
-
-print(ssims)
-print(sizes)
+subprocess.run(['ifconfig'])

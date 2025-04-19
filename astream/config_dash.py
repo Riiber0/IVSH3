@@ -51,7 +51,7 @@ JSON_HANDLE['playback_info'] = {'start_time': None,
                                 }
 # Constants for the BASIC-2 adaptation scheme
 BASIC_THRESHOLD = 1
-BASIC_UPPER_THRESHOLD = 1.5
+BASIC_UPPER_THRESHOLD = 1.2
 # Additional constant for the BASIC-3 adaptation scheme
 BASIC_LOWER_THRESHOLD = 0.9
 # Number of segments for moving average
