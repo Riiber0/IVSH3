@@ -1,0 +1,5 @@
+for a in pred narrow ; do
+	for c in b nb; do
+		for i in {1..5}; do bash scripts/$a-ms-$c $1; done
+	done
+done

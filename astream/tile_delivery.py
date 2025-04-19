@@ -12,6 +12,8 @@ class TileDelivery:
         self.playback_timer = timer
         self.segment_duration = segment_duration
         self.segment = 1
+        self.last_segment = None
+        self.lock = threading.Lock()
     
     @abstractmethod
     def get_tiles(self):
@@ -25,30 +27,38 @@ class NarrowReader(TileDelivery):
     """reads tiles from csv"""
     def __init__(self, timer, tiledataset, segment_duration):
         super().__init__(timer, segment_duration)
-        self.df = pd.read_table(tiledataset, header=None)
+        self.df = pd.read_table(tiledataset, header=None, sep=',')
         self.df = self.df.iloc[1:]
-        self.df = self.df[0].str.split(',', expand=True)
+        #self.df = self.df[0].str.split(',', expand=True)
         self.tiles = None
         self.reader = None
 
     def initialize_reader(self):
         df_index = 0
+
+        self.lock.acquire()
         move_alert_l = deque(self.df[0])
         move_alert_time = float(move_alert_l.popleft())
         self.tiles = self.df.iloc[df_index][1:]
-        self.tiles = [int(tile) for tile in self.tiles if tile != '']
+        self.tiles = list(self.tiles.dropna())
+        self.tiles = [int(tile) for tile in self.tiles]
+        self.lock.release()
 
         while True:
+            #change segment
+            self.segment = self.playback_timer.time()//self.segment_duration + 1
             if self.playback_timer.time() >= move_alert_time:
-                #change segment
-                self.segment = self.playback_timer.time()//self.segment_duration + 1
+                self.lock.acquire()
 
                 #change tiles
                 df_index += 1
                 if df_index == len(self.df):
+                    self.lock.release()
                     return
                 self.tiles = self.df.iloc[df_index][1:]
-                self.tiles = [int(tile) for tile in self.tiles if tile != '']
+                self.tiles = list(self.tiles.dropna())
+                self.tiles = [int(tile) for tile in self.tiles]
+                self.lock.release()
 
                 #change next alert time
                 move_alert_time = float(move_alert_l.popleft())
@@ -62,29 +72,35 @@ class NarrowReader(TileDelivery):
         self.reader.start()
 
     def get_tiles(self):
-        while(self.tiles == None):
-            time.sleep(0.05)
+        self.lock.acquire()
+        segment = self.segment
+        tiles = self.tiles
+        self.lock.release()
 
-        return self.segment, self.tiles
+        return segment, tiles
 
 class PerfPredict(TileDelivery):
     """reads tiles from csv"""
     def __init__(self, timer, tiledataset, segment_duration, predict_time=0.5):
         super().__init__(timer, segment_duration)
-        self.df = pd.read_table(tiledataset, header=None)
+        self.df = pd.read_table(tiledataset, header=None, sep=',')
         self.df = self.df.iloc[1:]
-        self.df = self.df[0].str.split(',', expand=True)
+        #self.df = self.df[0].str.split(',', expand=True)
         self.tiles = None
         self.reader = None
         self.predict_time = predict_time
 
     def initialize_reader(self):
         df_index = 0
+
+        self.lock.acquire()
         move_alert_l = deque(self.df[0])
         move_alert_time = float(move_alert_l.popleft())
         tiles_sum = list()
         tiles_sum = self.df.iloc[df_index][1:]
-        tiles_sum = [int(tile) for tile in tiles_sum if tile != '']
+        tiles_sum = tiles_sum.dropna()
+        tiles_sum = list(tiles_sum)
+        tiles_sum = [int(tile) for tile in tiles_sum]
 
         i = 0.0
         while i <= self.predict_time:
@@ -92,7 +108,8 @@ class PerfPredict(TileDelivery):
                 #acumulate tiles for playback start
                 df_index += 1
                 new_tiles = self.df.iloc[df_index][1:]
-                new_tiles = [int(tile) for tile in new_tiles if tile != '']
+                new_tiles = list(new_tiles.dropna())
+                new_tiles = [int(tile) for tile in new_tiles]
                 
                 for tile in new_tiles:
                     if tile not in tiles_sum:
@@ -102,25 +119,35 @@ class PerfPredict(TileDelivery):
                 move_alert_time = float(move_alert_l.popleft())
 
             i += 0.01
+        self.lock.release()
 
 
         tiles_sum.sort()
         self.tiles = tiles_sum
         while True:
+            #change segment
+            self.segment = (self.playback_timer.time() + self.predict_time)//self.segment_duration + 1
             if (self.playback_timer.time() + self.predict_time) >= move_alert_time:
-                #change segment
-                self.segment = (self.playback_timer.time() + self.predict_time)//self.segment_duration + 1
 
                 #change tiles
+                self.lock.acquire()
                 df_index += 1
                 if df_index == len(self.df):
+                    self.lock.release()
                     return
-                self.tiles = self.df.iloc[df_index][1:]
-                self.tiles = [int(tile) for tile in self.tiles if tile != '']
+
+                if self.segment != self.last_segment:
+                    self.tiles = []
+
+                current_tiles = [int(tile) for tile in self.df.iloc[df_index][1:].dropna()]
+                new_tiles = [tile for tile in current_tiles if tile not in self.tiles]
+                self.tiles += new_tiles
+                self.lock.release()
 
                 #change next alert time
                 move_alert_time = float(move_alert_l.popleft())
             
+            self.last_segment = self.segment
             time.sleep(0.01)
 
 
@@ -130,10 +157,12 @@ class PerfPredict(TileDelivery):
         self.reader.start()
 
     def get_tiles(self):
-        while(self.tiles == None):
-            time.sleep(0.05)
+        self.lock.acquire()
+        segment = self.segment
+        tiles = self.tiles
+        self.lock.release()
 
-        return self.segment, self.tiles
+        return segment, tiles
 
 class AllReader(TileDelivery):
     """return list with every tile"""
@@ -153,7 +182,7 @@ if __name__ == '__main__':
     """test"""
     r = StopWatch()
     r.start()
-    d = PerfPredict(r, "move_alert.csv", 4, 1.5)
+    d = NarrowReader(r, "move_alert.csv", 4)
     d.start()
     print(d.get_tiles())
         

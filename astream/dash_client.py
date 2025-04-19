@@ -25,8 +25,11 @@ import ssl
 import timeit
 import http.client
 import io
-import json
 import math
+import json
+import struct
+import subprocess
+import socket
 from string import ascii_letters, digits
 from argparse import ArgumentParser
 from multiprocessing import Process, Queue
@@ -39,8 +42,9 @@ import config_dash
 import dash_buffer
 import time
 import pandas as pd
-from tile_delivery import NarrowReader, AllReader
-
+from tile_delivery import *
+from threading import Thread
+from util import linePriority, outer_zone_percentage, outer_zone_fixed
 
 # Constants
 DEFAULT_PLAYBACK = 'BASIC'
@@ -54,6 +58,11 @@ PLAYBACK = DEFAULT_PLAYBACK
 DOWNLOAD = False
 SEGMENT_LIMIT = None
 
+HEAD_TRACE_PATH = "/home/vagrant/workspace/Dash360-sa-ecf/astream/"
+
+#Globals for threads
+total_downloaded = None
+
 
 class DashPlayback:
     """
@@ -66,6 +75,7 @@ class DashPlayback:
         self.playback_duration = None
         self.audio = dict()
         self.video = dict()
+        self.ssims = dict()
 
 
 def get_mpd(url):
@@ -120,6 +130,27 @@ def id_generator(id_size=6):
     """
     return 'TEMP_' + ''.join(random.choice(ascii_letters+digits) for _ in range(id_size))
 
+def gelato_get_action(conn, env_info):
+    data = json.dumps(env_info)
+    data = data.encode('utf-8')
+    json_len = struct.pack("!H", len(data))
+
+    conn.sendall(json_len + data)
+
+    data_rv_len_struct = conn.recv(2, socket.MSG_WAITALL)
+    data_rv_len, *_ = struct.unpack("!H", data_rv_len_struct)
+    data_rv_data = conn.recv(data_rv_len, socket.MSG_WAITALL)
+    data_rv = json.loads(data_rv_data)
+    action = data_rv['action']
+
+    return action
+
+def gelato_close(conn):
+    d = {'close':True}
+    data = json.dumps(d)
+    data = data.encode('utf-8')
+    json_len = struct.pack("!H", len(data))
+    conn.sendall(json_len + data)
 
 def download_segment(segment_url, dash_folder, download=False):
     """ Module to download the segment with one
@@ -139,6 +170,58 @@ def download_segment(segment_url, dash_folder, download=False):
         raise ValueError("invalid segment_size, connection dropped")
     return segment_size, segment_name
 
+def download_segment_priority(segment_url, priority, dash_folder, download=False):
+    """ Module to download the segment with one
+        permanent HTTP connection.
+        File is not written to disk.
+    """
+    cropped_fInd = segment_url.rfind('/')
+    segment_name = segment_url[cropped_fInd+1:len(segment_url)]
+
+    filename = ""
+    if download:
+        filename = os.path.join(dash_folder, segment_name)
+        print("SAVING IN ", filename)
+
+    segment_size = glueConnection.download_segment_priority_PM(segment_url, priority)
+    if segment_size < 0:
+        raise ValueError("invalid segment_size, connection dropped")
+    return segment_size, segment_name
+
+def download_thread(playback_type, tile, segment_url, priority, file_identifier, download,
+                    previous_download_times, tiles_in_segment, download_sizes_t, segment_files):
+    config_dash.LOG.info("{}: Downloading file {}".format(playback_type.upper(), segment_url))
+    
+    try:
+        start_time = timeit.default_timer()
+
+        if MS:
+            segment_size, segment_filename = download_segment_priority(segment_url, priority, file_identifier, download)
+        else:
+            segment_size, segment_filename = download_segment(segment_url, file_identifier, download)
+
+        segment_download_time = timeit.default_timer() - start_time
+        previous_download_times.append(segment_download_time)
+        config_dash.LOG.info("{}: Downloaded segment {}".format(playback_type.upper(), segment_url))
+    except IOError as e:
+        config_dash.LOG.error('Unable to save segment %s' % e)
+        os._exit(1)
+
+    tiles_in_segment.append(tile)
+    #segment_size = dp_object.video[current_bitrate].segment_size
+
+    download_sizes_t.append(segment_size)
+    segment_files.append(segment_filename)
+
+    #update tje JSON information
+    segment_name = os.path.split(segment_url)[1]
+    if 'segment_info' not in config_dash.JSON_HANDLE:
+        config_dash.JSON_HANDLE['segment_info'] = list()
+    config_dash.JSON_HANDLE['segment_info'].append((segment_name, segment_size, segment_download_time))
+
+    download_sizes_t.append(segment_size)
+
+    config_dash.LOG.info('Downloaded {}. Size = {} in {} seconds'.format( segment_url, segment_size, str(segment_download_time)))
 
 def get_media_all(domain, media_info, file_identifier, done_queue):
     """ Download the media from the list of URL's in media
@@ -174,6 +257,35 @@ def print_representations(dp_object):
     for bandwidth in dp_object.video:
         print(bandwidth)
 
+def get_segment_tile_buffer(segment_number, dash_player):
+    segment = dash_player.get_segment(segment_number)
+
+    if segment != None:
+        return segment['tiles_in_segment']
+
+    return []
+
+def get_segment_bitrate(segment_number, dash_player):
+    segment = dash_player.get_segment(segment_number)
+    
+    return segment['bitrate']
+
+def get_player_segment_number(dash_player):
+    segment= dash_player.current_segment
+    
+    if segment == None:
+        return -1
+
+    else:
+        return segment['segment_number']
+
+def check_segment_in_buffer(segment_number, dash_player):
+    segment = dash_player.get_segment(segment_number)
+
+    if segment == None:
+        return False
+    
+    return True
 
 def start_playback_smart(dp_object, domain, playback_type=None, download=False, video_segment_duration=None):
     """ Module that downloads the MPD-FIle and download
@@ -193,7 +305,374 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
     """
     glueConnection.startLogging(1000)
     # Initialize the DASH buffer
-    dash_player = dash_buffer.DashPlayer(dp_object.playback_duration, video_segment_duration)
+    dash_player = dash_buffer.DashPlayer(dp_object.playback_duration, video_segment_duration, TP)
+    dash_player.start()
+    print(dp_object.playback_duration)
+    # A folder to save the segments in
+    file_identifier = id_generator()
+    if download:
+        os.makedirs(file_identifier)
+        config_dash.LOG.info("The segments are stored in %s" % file_identifier)
+
+    dp_list = dict()
+    downloaded_tiles = dict()
+
+    for bitrate in dp_object.video:
+        # Getting the URL list for each bitrate
+        dp_object.video[bitrate] = read_mpd.get_url_list(dp_object.video[bitrate], video_segment_duration,
+                                                         dp_object.playback_duration, bitrate)
+
+        for tile_id in dp_object.video[bitrate].url_list:
+            media_urls = dp_object.video[bitrate].url_list[tile_id]
+
+            for segment_count, segment_url in enumerate(media_urls, dp_object.video[bitrate].start):
+                if segment_count not in dp_list.keys():
+                    dp_list[segment_count] = dict()
+                    downloaded_tiles[segment_count] = dict()
+
+                if bitrate not in dp_list[segment_count].keys():
+                    dp_list[segment_count][bitrate] = dict()
+                    downloaded_tiles[segment_count][bitrate] = dict()
+
+                dp_list[segment_count][bitrate][tile_id] = segment_url
+                downloaded_tiles[segment_count][bitrate][tile_id] = False
+
+    bitrates = list(dp_object.video.keys())
+    bitrates.sort()
+
+    ssims = dp_object.ssims
+    ssim_list = [list(ssim.values()) for ssim in ssims.values()]
+
+    for segment in ssims.keys():
+        b = list(ssims[segment])
+        b.sort()
+        for i in range(0, len(bitrates)):
+            ssims[segment][bitrates[i]] = ssims[segment][b[i]]
+
+    sizes = dict()
+    for bitrate in dp_list[segment_count]:
+        sizes[bitrate] = dp_object.video[bitrate].segment_size/(1.25 * 10**7)
+
+    bitrates = list(dp_object.video.keys())
+    bitrates.sort()
+    average_dwn_time = 0
+    segment_files = []
+    # For basic adaptation
+    weighted_mean_object = None
+    current_bitrate = bitrates[0]
+    previous_bitrate = None
+    total_downloaded = 0
+    # Delay in terms of the number of segments
+    delay = 0
+    segment_duration = dp_object.video[current_bitrate].segment_duration
+    segment_size = segment_download_time = None
+    # Netflix Variables
+    average_segment_sizes = netflix_rate_map = None
+    netflix_state = "INITIAL"
+    # tile variables
+    recent_download_sizes = []
+    previous_download_times = []
+    total_tiles = len(dp_list[segment_count][bitrate])
+    tiles = []
+    tiles_in_segment = []
+    pre_ulrs_dict = None # (tile : [bitrate, stream_priotyt]), created by ABR
+    urls_dict = None # (file_url : stream_prioryt), created after pre_url_dict mapping
+    emergency_flag = False
+    # segment variables
+    previous_segments_times = []
+    total_segment_size = None
+    previous_segments_sizes = []
+    last_segment = -1
+    new_segment = False
+    #tread variables
+    threads_highP = []
+    threads_lowP = []
+    download_sizes_t = []
+    download_times_t = []
+    #buffer varialbes
+    segment_increase = 0
+    #gelato variables
+    conn = None
+    addr =None
+    gelato_p = None
+    gelato_data = {
+            'buffer': 0,
+            'cum_rebuf': 0,
+            'sizes': [list(sizes.values()) for i in range(5)],
+            'ssims': ssim_list[0:5],
+            'channel_name': 'AStream360'
+    }
+
+    # tile reader
+    if TILE_READER == "NARROW":
+        tileReader = NarrowReader(dash_player.playback_timer, HEAD_TRACE_PATH+'move_alert.csv', segment_duration)
+    elif TILE_READER == "ALL":
+        tileReader = AllReader(dash_player.playback_timer, total_tiles, segment_duration)
+    elif TILE_READER.upper() == "PERFPREDICT":
+        tileReader = PerfPredict(dash_player.playback_timer, HEAD_TRACE_PATH+'move_alert.csv', segment_duration, PREDICT_TIME)
+
+    #tile getter
+    if TILE_GETTER or TILE_READER == "PERFPREDICT":
+        dash_player.tile_getter = NarrowReader(dash_player.playback_timer, HEAD_TRACE_PATH+'move_alert.csv', segment_duration)
+        dash_player.tile_getter.start()
+    else:
+        dash_player.tile_getter = tileReader
+
+    tileReader.start()
+
+    #outer zone
+    if OUTER_ZONE == "P":
+        outer_zone_func = outer_zone_percentage
+
+    elif OUTER_ZONE == "F":
+        outer_zone_func = outer_zone_fixed
+
+    #gelato setup
+    if playback_type.upper() == 'MAGURO':
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        if os.path.exists("/tmp/socket_test.s"):
+          os.remove("/tmp/socket_test.s")
+
+        sock.bind("/tmp/socket_test.s")
+        gelato_p = subprocess.Popen(['python3', '/home/vagrant/workspace/Dash360-sa-ecf/astream/adaptation/abr_rl_test/test.py', 'maguro' ,'/home/vagrant/workspace/Dash360-sa-ecf/astream/adaptation/abr_rl_test/models/maguro_model.pt', '/tmp/socket_test.s'])
+        sock.listen()
+        conn, addr = sock.accept()
+    elif playback_type.upper() == 'UNAGI':
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        if os.path.exists("/tmp/socket_test.s"):
+          os.remove("/tmp/socket_test.s")
+
+        sock.bind("/tmp/socket_test.s")
+        gelato_p = subprocess.Popen(['python3', '/home/vagrant/workspace/Dash360-sa-ecf/astream/adaptation/abr_rl_test/test.py', 'maguro' ,'/home/vagrant/workspace/Dash360-sa-ecf/astream/adaptation/abr_rl_test/models/unagi_model.pt', '/tmp/socket_test.s'])
+        sock.listen()
+        conn, addr = sock.accept()
+
+    # waiting for the player to finish playing
+    segment_number = dp_object.video[current_bitrate].start
+    download_flag = False
+    while dash_player.playback_state not in dash_buffer.EXIT_STATES:
+        segment_number, n_tiles = tileReader.get_tiles()
+        if segment_number <= len(dp_list.keys()):
+
+            if dash_player.current_segment != None and len(dash_player.emergency_tiles) > 0:
+                segment_number = get_player_segment_number(dash_player)
+                tiles = dash_player.emergency_tiles
+                config_dash.LOG.info("emergency call: segment {} total {} tiles{}".format(segment_number, len(tiles), tiles))
+                current_bitrate = dash_player.current_segment['bitrate']
+                tiles_in_segment = dash_player.current_segment['tiles_in_segment'] 
+                emergency_flag = True
+
+            else:
+
+                tiles_in_segment = get_segment_tile_buffer(segment_number, dash_player) 
+                new_tiles = [tile for tile in n_tiles if tile not in tiles_in_segment]
+
+                if segment_number == get_player_segment_number(dash_player):
+                    if new_tiles == []:
+                        next_segment = segment_number + segment_increase + 1
+                        if segment_increase + 1 < config_dash.MAX_BUFFER_SIZE:
+                            segment_increase += 1
+
+                        if segment_number + segment_increase < len(dp_list.keys()):
+                            segment_number += segment_increase
+                        tiles_in_segment = get_segment_tile_buffer(segment_number, dash_player) 
+                        new_tiles = [tile for tile in n_tiles if tile not in tiles_in_segment]
+
+                    else:
+                        segment_increase = 0
+
+                if not check_segment_in_buffer(segment_number, dash_player):
+                    new_segment = True
+
+                tiles = tiles_in_segment.copy()
+                tiles += new_tiles
+
+                #Bitrate selection
+                if BITRATE is not None:
+                    pass
+
+                elif not new_segment:
+                    current_bitrate = get_segment_bitrate(segment_number, dash_player)
+
+                elif playback_type.upper() == "BASIC":
+                    current_bitrate, average_dwn_time = basic_dash3.basic_dash3(
+                    segment_number, bitrates, average_dwn_time, previous_segments_sizes, 
+                    previous_segments_times, current_bitrate)
+
+                elif playback_type.upper() == 'SMART':
+                    if not weighted_mean_object:
+                        weighted_mean_object = WeightedMean(config_dash.SARA_SAMPLE_COUNT)
+                        config_dash.LOG.debug("Initializing the weighted Mean object")
+
+                    current_bitrate, delay = weighted_dash.weighted_dash(bitrates, dash_player, 
+                            weighted_mean_object.weighted_mean_rate, 
+                                current_bitrate, get_segment_sizes(dp_object, segment_number))
+
+                elif playback_type.upper() == 'MAGURO' or playback_type.upper() == 'UNAGI':
+                    action = gelato_get_action(conn, gelato_data)
+                    current_bitrate = bitrates[action]
+                    
+                if TP:
+                    lowP, highP = linePriority(tiles)
+
+                if OUTER_ZONE and int(OUTER_ZONE_SIZE) > 0:
+                    lowP += outer_zone_func(tiles, total_tiles, OUTER_ZONE_SIZE)
+
+
+            total_segment_size = 0
+            for tile in tiles:
+                bitrate = current_bitrate
+                # print("{} {} {}".format(segment_number, bitrate, tile))
+
+                if TP and tile in lowP:
+                    priority = 0x00
+
+                    if BITRATE_REDUCTION:
+                        if bitrates.index(current_bitrate) > 0:
+                            bitrate = bitrates[bitrates.index(current_bitrate) - 1]
+
+                        else:
+                            bitrate = current_bitrate
+
+                else:
+                    priority = 0xff
+                    #bitrate = current_bitrate
+
+                if not downloaded_tiles[segment_number][bitrate][tile]:
+                    download_flag = True
+
+                    path_to_tiles = dp_list[segment_number][bitrate]
+                    segment_url = urllib.parse.urljoin(domain, path_to_tiles[tile])
+
+                    if TP and tile in lowP:
+                        t = Thread(target=download_thread, daemon=True,
+                                    args=(playback_type, tile, segment_url, priority, file_identifier, download, 
+                                        download_times_t, tiles_in_segment, download_sizes_t, segment_files))
+
+                        threads_lowP.append(t)
+
+                    else:
+                        t = Thread(target=download_thread, daemon=True,
+                                    args=(playback_type, tile, segment_url, priority,  file_identifier, download, 
+                                        download_times_t, tiles_in_segment, download_sizes_t, segment_files))
+
+                        threads_highP.append(t)
+
+                    downloaded_tiles[segment_number][bitrate][tile] = True
+
+            if download_flag:
+                download_flag = True
+                start_time = timeit.default_timer()
+                for t in threads_highP + threads_lowP:
+                    t.start()
+
+                    """
+                    if not MS:
+                        t.join()
+                    """
+
+                for t in threads_highP:
+                    t.join()
+
+                segment_download_time = timeit.default_timer() - start_time
+
+                if new_segment:
+                    segment_info = {'playback_length' : video_segment_duration,
+                                    'bitrate' : current_bitrate,
+                                    'ssim' : ssims[segment_number][current_bitrate],
+                                    'segment_number' : segment_number,
+                                    'tiles_in_segment' : tiles_in_segment}
+
+                    dash_player.write(segment_info)
+
+                for t in threads_lowP:
+                    t.join()
+
+                previous_segments_times.append(segment_download_time)
+
+                recent_download_sizes += download_sizes_t
+                previous_download_times += download_times_t
+                total_segment_size = sum(download_sizes_t)
+                previous_segments_sizes.append(total_segment_size)
+                total_downloaded += total_segment_size
+
+                download_sizes_t = []
+                download_times_t = []
+                threads_highP = []
+                threads_lowP = []
+
+            if playback_type.upper() == 'SMART' and weighted_mean_object and new_segment:
+                #print(get_segment_sizes(dp_object, segment_number))
+                weighted_mean_object.update_weighted_mean(get_segment_sizes(dp_object, segment_number)[current_bitrate], segment_download_time)
+
+            elif playback_type.upper() == 'MAGURO' or playback_type.upper() == 'UNAGI' and new_segment:
+                gelato_data['buffer'] = dash_player.get_buffer_length()
+                gelato_data['cum_rebuf'] = dash_player.get_rebuf()
+                gelato_data['past_chunk'] = {
+                            'delay': segment_download_time,
+                            'ssim': ssims[segment_number][bitrate],
+                            'size': sizes[bitrate]
+                }
+                l = ssim_list[int(segment_number):int(segment_number)+5]
+                if len(l) < 5 and len(l) > 0:
+                    l = l + [l[-1] for i in range(0, 5-len(l))]
+
+                gelato_data['ssims'] = l
+
+            if download_flag:
+                config_dash.LOG.info("{} : The total downloaded = {}, segment_size = {}, segment_number = {}".format(
+                                    playback_type.upper(), total_downloaded, segment_size, segment_number))
+                download_flag = False
+
+            if NO_KEEP_ALIVE:
+                #print('no keep alive')
+                glueConnection.closeConnection()
+
+            if emergency_flag:
+                emergency_flag = False
+                last_segment = segment_number
+                dash_player.emergency_tiles = []
+                dash_player.current_segment['tiles_in_segment'].extend(tiles)
+
+        if previous_bitrate:
+            if previous_bitrate < current_bitrate:
+                config_dash.JSON_HANDLE['playback_info']['up_shifts'] += 1
+            elif previous_bitrate > current_bitrate:
+                config_dash.JSON_HANDLE['playback_info']['down_shifts'] += 1
+
+            previous_bitrate = current_bitrate
+
+        last_segment = segment_number
+        new_segment = False
+
+
+    #if playback_type.upper() == 'GELATO':
+    #   gelato_close(conn)
+    glueConnection.stopLogging()
+    glueConnection.closeConnection()
+
+    if not download:
+        clean_files(file_identifier)
+
+def start_playback_smart_sequential(dp_object, domain, playback_type=None, download=False, video_segment_duration=None):
+    """ Module that downloads the MPD-FIle and download
+        all the representations of the Module to download
+        the MPEG-DASH media.
+        Example: start_playback_smart(dp_object, domain, "SMART", DOWNLOAD, video_segment_duration)
+
+        :param dp_object:       The DASH-playback object
+        :param domain:          The domain name of the server (The segment URLS are domain + relative_address)
+        :param playback_type:   The type of playback
+                                1. 'BASIC' - The basic adapataion scheme
+                                2. 'SMART' - Segment Aware Rate Adaptation
+                                3. 'NETFLIX' - Buffer based adaptation used by Netflix
+        :param download: Set to True if the segments are to be stored locally (Boolean). Default False
+        :param video_segment_duration: Playback duratoin of each segment
+        :return:
+    """
+    glueConnection.startLogging(1000)
+    # Initialize the DASH buffer
+    dash_player = dash_buffer.DashPlayer(dp_object.playback_duration, video_segment_duration, TP)
     dash_player.start()
     print(dp_object.playback_duration)
     # A folder to save the segments in
@@ -246,23 +725,28 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
     netflix_state = "INITIAL"
     # tile variables
     total_tiles = len(dp_list[segment_count][bitrate])
-    tiles = None
+    tiles = []
     tiles_in_segment = []
-    tile_change = False
     last_segment = -1
+    pre_ulrs_dict = None # (tile : [bitrate, stream_priotyt]), created by ABR
+    urls_dict = None # (file_url : stream_prioryt), created after pre_url_dict mapping
+    emergency_flag = False
+    total_segment_size = None
+    #tread variables
+        #t_list = []
+    threads = []
 
     # tile reader
     if TILE_READER == "NARROW":
-        tileReader = NarrowReader(dash_player.playback_timer, 'move_alert.csv', segment_duration)
+        tileReader = NarrowReader(dash_player.playback_timer, HEAD_TRACE_PATH+'move_alert.csv', segment_duration)
     elif TILE_READER == "ALL":
         tileReader = AllReader(dash_player.playback_timer, total_tiles, segment_duration)
-    elif TILE_READER == "PERFPREDICT":
-        tiledReader = PerfPredict(dash_player.playback_timer, 'move_alert.csv', segment_duration, PREDICT_TIME)
-        TILE_GETTER = True
+    elif TILE_READER.upper() == "PERFPREDICT":
+        tileReader = PerfPredict(dash_player.playback_timer, HEAD_TRACE_PATH+'move_alert.csv', segment_duration, PREDICT_TIME)
 
     #tile getter
-    if TILE_GETTER:
-        dash_player.tile_getter = NarrowReader(dash_player.playback_timer, 'move_alert.csv', segment_duration)
+    if TILE_GETTER or TILE_READER == "PERFPREDICT":
+        dash_player.tile_getter = NarrowReader(dash_player.playback_timer, HEAD_TRACE_PATH+'move_alert.csv', segment_duration)
         dash_player.tile_getter.start()
     else:
         dash_player.tile_getter = tileReader
@@ -271,53 +755,141 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
 
     # waiting for the player to finish playing
     segment_number = dp_object.video[current_bitrate].start
+    downloaded_flag = False
     while dash_player.playback_state not in dash_buffer.EXIT_STATES:
         if segment_number <= len(dp_list.keys()):
 
-            segment_number, tiles = tileReader.get_tiles()
-            path_to_tiles = dp_list[segment_number][current_bitrate]
+            segment_number, n_tiles = tileReader.get_tiles()
+
+            for tile in n_tiles:
+                if tile not in tiles:
+                    tiles.append(tile)
 
             if last_segment != segment_number:
                 tiles_in_segment = []
 
-            for tile in tiles:
-                if not downloaded_tiles[segment_number][current_bitrate][tile]:
-                    downloaded_tiles[segment_number][current_bitrate][tile] = True
+            if BITRATE is not None:
+                pass
 
-                    if not tile_change and dash_player.current_segment != None:
-                        tile_change = True
+            elif playback_type.upper() == "BASIC" and last_segment != segment_number:
+                current_bitrate, average_dwn_time = basic_dash3.basic_dash3(
+                segment_number, bitrates, average_dwn_time, recent_download_sizes, 
+                previous_segment_times, current_bitrate)
+
+            elif playback_type.upper() == 'SMART' and last_segment != segment_number:
+                if not weighted_mean_object:
+                    weighted_mean_object = WeightedMean(config_dash.SARA_SAMPLE_COUNT)
+                    config_dash.LOG.debug("Initializing the weighted Mean object")
+
+                current_bitrate, delay = weighted_dash.weighted_dash(bitrates, dash_player, 
+                        weighted_mean_object.weighted_mean_rate, 
+                            current_bitrate, get_segment_sizes(dp_object, segment_number))
+
+            # priority = 0xff
+            if TP:
+                lowP, highP = linePriority(tiles)
+
+            if MS:
+                threads = []
+                download_sizes_t = []
+
+            if dash_player.current_segment != None and len(dash_player.emergency_tiles) > 0:
+                segment_number = get_player_segment_number(dash_player)
+                tiles = dash_player.emergency_tiles
+                emergency_flag = True
+
+            total_segment_size = 0
+            for tile in tiles:
+                # print("{} {} {}".format(segment_number, bitrate, tile))
+
+                if TP and tile in lowP and bitrates.index(current_bitrate) > 0:
+                    priority = 0x00
+                    bitrate = bitrates[bitrates.index(current_bitrate) - 1]
+
+                else:
+                    priority = 0xff
+                    bitrate = current_bitrate
+
+                path_to_tiles = dp_list[segment_number][bitrate]
+
+                if not downloaded_tiles[segment_number][bitrate][tile]:
+                    downloaded_tiles[segment_number][bitrate][tile] = True
+                    downloaded_flag = True
 
                     segment_url = urllib.parse.urljoin(domain, path_to_tiles[tile])
-                    config_dash.LOG.info("{}: Downloading file {}".format(TILE_READER.upper(), segment_url))
-                    
-                    try:
-                        start_time = timeit.default_timer()
-                        segment_size, segment_filename = download_segment(segment_url, file_identifier, download)
-                        segment_download_time = timeit.default_timer() - start_time
-                        previous_segment_times.append(segment_download_time)
-                        config_dash.LOG.info("{}: Downloaded segment {}".format(playback_type.upper(), segment_url))
-                    except IOError as e:
-                        config_dash.LOG.error('Unable to save segment %s' % e)
-                        return None
 
-                    tiles_in_segment.append(tile)
-                    segment_size = dp_object.video[current_bitrate].segment_size
+                    if not MS:
+                        config_dash.LOG.info("{}: Downloading file {}".format(playback_type.upper(), segment_url))
+                        
+                        try:
+                            start_time = timeit.default_timer()
+                            segment_size, segment_filename = download_segment(segment_url, file_identifier, download)
+                            segment_download_time = timeit.default_timer() - start_time
+                            previous_segment_times.append(segment_download_time)
+                            config_dash.LOG.info("{}: Downloaded segment {}".format(playback_type.upper(), segment_url))
+                        except IOError as e:
+                            config_dash.LOG.error('Unable to save segment %s' % e)
+                            return None
 
-                    recent_download_sizes.append(segment_size)
-                    segment_files.append(segment_filename)
+                        tiles_in_segment.append(tile)
+                        segment_size = dp_object.video[bitrate].segment_size
 
-                    #update tje JSON information
-                    segment_name = os.path.split(segment_url)[1]
-                    if 'segment_info' not in config_dash.JSON_HANDLE:
-                        config_dash.JSON_HANDLE['segment_info'] = list()
-                    config_dash.JSON_HANDLE['segment_info'].append((segment_name, segment_size, segment_download_time))
+                        recent_download_sizes.append(segment_size)
+                        segment_files.append(segment_filename)
 
-                    total_downloaded += segment_size
-                    config_dash.LOG.info("{} : The total downloaded = {}, segment_size = {}, segment_number = {}".format(
-                                        playback_type.upper(), total_downloaded, segment_size, segment_number))
+                        #update tje JSON information
+                        segment_name = os.path.split(segment_url)[1]
+                        if 'segment_info' not in config_dash.JSON_HANDLE:
+                            config_dash.JSON_HANDLE['segment_info'] = list()
+                        config_dash.JSON_HANDLE['segment_info'].append((segment_name, segment_size, segment_download_time))
 
-                    config_dash.LOG.info('Downloaded {}. Size = {} in {} seconds'.format(
+
+                        config_dash.LOG.info('Downloaded {}. Size = {} in {} seconds'.format(
+                                            segment_url, segment_size, str(segment_download_time)))
+
+                        total_downloaded += segment_size
+                        total_segment_size += segment_size
+
+                    else: 
+                        #download_thread(playback_type, segment_url, priority, tiles_in_segment, recent_download_sizes, segment_files)
+                        t = Thread(target=download_thread, daemon=True,
+                                    args=(playback_type, tile, segment_url, priority, file_identifier, download, 
+                                            previous_segment_times, tiles_in_segment, download_sizes_t, segment_files))
+                        threads.append(t)
+
+            if len(threads) > 0:
+                downloaded_flag = True
+                start_time = timeit.default_timer()
+                for t in threads:
+                    t.start()
+
+                for t in threads:
+                    t.join()
+
+                segment_download_time = timeit.default_timer() - start_time
+
+                recent_download_sizes += download_sizes_t
+                total_segment_size = sum(download_sizes_t)
+                total_downloaded += total_segment_size
+                config_dash.LOG.info('Downloaded {}. Size = {} in {} seconds'.format(
                                         segment_url, segment_size, str(segment_download_time)))
+
+            if playback_type.upper() == 'SMART' and weighted_mean_object and last_segment != segment_number:
+                print(get_segment_sizes(dp_object, segment_number))
+                weighted_mean_object.update_weighted_mean(get_segment_sizes(dp_object, segment_number)[current_bitrate], segment_download_time)
+
+
+            if downloaded_flag:
+                config_dash.LOG.info("{} : The total downloaded = {}, segment_size = {}, segment_number = {}".format(
+                                    playback_type.upper(), total_downloaded, segment_size, segment_number))
+                downloaded_flag = False
+
+            if NO_KEEP_ALIVE:
+                glueConnection.closeConnection()
+
+            if emergency_flag:
+                dash_player.current_segment['tiles_in_segment'].extend(tiles)
+                emergency_flag = False
 
             if last_segment != segment_number:
                 segment_info = {'playback_length' : video_segment_duration,
@@ -327,11 +899,6 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
 
                 last_segment = segment_number
                 dash_player.write(segment_info)
-
-            elif tile_change:
-                dash_player.update_tiles(tiles_in_segment)
-                tile_change = False
-
 
         #old:
         #segment_number = dash_player.playback_timer.time()//dp_object.video[current_bitrate].segment_duration + 1
@@ -350,14 +917,13 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
     if not download:
         clean_files(file_identifier)
 
-
 def get_segment_sizes(dp_object, segment_number):
     """ Module to get the segment sizes for the segment_number
     :param dp_object:
     :param segment_number:
     :return:
     """
-    segment_sizes = {bitrate: dp_object.video[bitrate].segment_sizes[segment_number] for bitrate in dp_object.video}
+    segment_sizes = {bitrate: dp_object.video[bitrate].segment_size for bitrate in dp_object.video}
     config_dash.LOG.debug("The segment sizes of {} are {}".format(segment_number, segment_sizes))
     return segment_sizes
 
@@ -515,9 +1081,24 @@ def create_arguments(parser):
     parser.add_argument('-tg', '--TILE_GETTER', action='store_true', 
                         default=False,
                         help="TileDelivery object for buffer")
-    parser.add_argument('-pt', '--PREDICT_TIME', 
+    parser.add_argument('-pt', '--PREDICT-TIME', 
                         default=0.5,
                         help="Prediction time")
+    parser.add_argument('-ms', '--MS', action='store_true', 
+                        default=False,
+                        help="Use mult-stream")
+    parser.add_argument('-tp', '--TP', action='store_true', 
+                        default=False,
+                        help="Priority for tiles in the center")
+    parser.add_argument('-oz', '--OUTER_ZONE', 
+                        default=False,
+                        help="zone outside FoV type")
+    parser.add_argument('-ozs', '--OUTER_ZONE_SIZE', 
+                        default=0,
+                        help="zone outside FoV size")
+    parser.add_argument('-br', '--BITRATE_REDUCTION', action='store_true',
+                        default=False,
+                        help="reduce bitrate with priority")
 
 
 def main():
@@ -545,10 +1126,11 @@ def main():
     config_dash.JSON_HANDLE['congestionControl'] = CC
     if not MPD:
         print("ERROR: Please provide the URL to the MPD file. Try Again..")
-        return None
+        return 1
 
     #glueConnection.setupFEC(fec, fecConfig)
-    glueConnection.setupPM(QUIC, MP, not NO_KEEP_ALIVE, SCHEDULER, CC)
+    glueConnection.setupLib(MS)
+    glueConnection.setupPM(QUIC, MP, MS, not NO_KEEP_ALIVE, SCHEDULER, CC)
 
     config_dash.LOG.info('Downloading MPD file %s' % MPD)
     # Retrieve the MPD files for the video
@@ -577,12 +1159,19 @@ def main():
     elif "netflix" in PLAYBACK.lower():
         config_dash.LOG.critical("Started Netflix-DASH Playback")
         start_playback_smart(dp_object, domain, "NETFLIX", DOWNLOAD, video_segment_duration)
+    elif "maguro" in PLAYBACK.lower():
+        config_dash.LOG.critical("Started maguro-DASH Playback")
+        start_playback_smart(dp_object, domain, "MAGURO", DOWNLOAD, video_segment_duration)
+    elif "unagi" in PLAYBACK.lower():
+        config_dash.LOG.critical("Started unagi-DASH Playback")
+        start_playback_smart(dp_object, domain, "UNAGI", DOWNLOAD, video_segment_duration)
     else:
         config_dash.LOG.error("Unknown Playback parameter {}".format(PLAYBACK))
-        return None
+        return 1
 
     write_json()
     print_interruptions_info()
+    return 0
 
 if __name__ == "__main__":
     sys.exit(main())

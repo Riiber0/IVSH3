@@ -51,7 +51,7 @@ JSON_HANDLE['playback_info'] = {'start_time': None,
                                 }
 # Constants for the BASIC-2 adaptation scheme
 BASIC_THRESHOLD = 1
-BASIC_UPPER_THRESHOLD = 1.5
+BASIC_UPPER_THRESHOLD = 1.2
 # Additional constant for the BASIC-3 adaptation scheme
 BASIC_LOWER_THRESHOLD = 0.9
 # Number of segments for moving average
@@ -68,7 +68,7 @@ RE_BUFFERING_COUNT = 1
 ALPHA_BUFFER_COUNT = 1
 BETA_BUFFER_COUNT = 2
 # Set the size of the buffer in terms of segments. Set to unlimited if 0 or None
-MAX_BUFFER_SIZE = 1
+MAX_BUFFER_SIZE = 4
 
 # ---------------------------------------------------
 # Netflix (Buffer-based) ADAPTATION
@@ -91,3 +91,10 @@ index_rtt_min = None
 index_rtt_avg = None
 index_rtt_max = None
 RTT = False
+
+# ---------------------------------------------------
+# Tiles config
+# ---------------------------------------------------
+
+TILE_LINE_COUNT = 10
+TILE_LINE_SIZE = 20

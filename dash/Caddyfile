@@ -5,14 +5,14 @@
 #
 
 # Unsecure listener for debugging purposes
-http://10.0.0.2:4040 {
-    root video/
+http://10.0.2.15:4040 {
+    root video_1s/
     log stdout
 }
 
 # Secure listener, required for TLS and QUIC connections
-https://10.0.0.2:4242 {
+https://10.0.2.15:4242 {
     root video/
-    tls cert.pem privkey.pem
+    tls self_signed
     log stdout
 }

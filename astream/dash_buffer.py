@@ -6,6 +6,7 @@ import csv
 import os
 import config_dash
 from stop_watch import StopWatch
+from util import linePriority
 
 # Durations in seconds
 PLAYER_STATES = ['INITIALIZED', 'INITIAL_BUFFERING', 'PLAY',
@@ -15,7 +16,7 @@ EXIT_STATES = ['STOP', 'END']
 
 class DashPlayer:
     """ DASH buffer class """
-    def __init__(self, video_length, segment_duration):
+    def __init__(self, video_length, segment_duration, tp):
         config_dash.LOG.info("Initializing the Buffer")
         self.player_thread = None
         self.playback_start_time = None
@@ -49,8 +50,14 @@ class DashPlayer:
         self.current_segment = None
         self.buffer_log_file = config_dash.BUFFER_LOG_FILENAME
         # 360 variables
+        self.rebuf = 0
+        self.rebuf_lock = threading.Lock()
         self.tile_getter = None
+        self.tiles_in_segment = None
         self.needed_tiles = None
+        self.unneeded_tiles = None
+        self.TP = tp
+        self.emergency_tiles = []
         config_dash.LOG.info("VideoLength={},segmentDuration={},MaxBufferSize={},InitialBuffer(secs)={},"
                              "BufferAlph(secs)={},BufferBeta(secs)={}".format(self.playback_duration,
                                                                               self.segment_duration,
@@ -68,6 +75,30 @@ class DashPlayer:
             self.playback_state_lock.release()
         else:
             config_dash.LOG.error("Unidentified state: {}".format(state))
+
+    def get_buffer_length(self):
+        self.buffer_length_lock.acquire()
+        buffer_length = self.buffer_length
+        self.buffer_length_lock.release()
+
+        return buffer_length
+
+    def get_rebuf(self):
+        self.rebuf_lock.acquire()
+        rebuf = self.rebuf
+        self.rebuf_lock.release()
+
+        return rebuf
+
+    def get_segment(self, segment_number):
+        if self.current_segment is not None and self.current_segment['segment_number'] == segment_number:
+            return self.current_segment
+
+        for segment in self.buffer.queue:
+            if segment['segment_number'] == segment_number:
+                return segment
+
+        return None
 
     def initialize_player(self):
         """Method that update the current playback time"""
@@ -132,6 +163,9 @@ class DashPlayer:
                             })
                             config_dash.JSON_HANDLE['playback_info']['interruptions']['total_duration'] += interruption
                             config_dash.LOG.info("Duration of interruption = {}".format(interruption))
+                            self.rebuf_lock.acquire()
+                            self.rebuf += interruption
+                            self.rebuf_lock.release()
                             interruption_start = None
                         self.set_state("PLAY")
                         self.log_entry("Buffering-Play")
@@ -167,7 +201,7 @@ class DashPlayer:
                     self.buffer_lock.release()
                     config_dash.LOG.info("Reading the segment number {} with length {} from the buffer at playtime {}".format(
                         play_segment['segment_number'], play_segment["playback_length"], self.playback_timer.time()))
-                    self.log_entry(action="StillPlaying", bitrate=play_segment["bitrate"])
+                    self.log_entry(action="StillPlaying", bitrate=play_segment["bitrate"], ssim=play_segment['ssim'])
 
                     # Calculate time playback when the segment finishes
                     future = self.playback_timer.time() + play_segment['playback_length']
@@ -182,18 +216,29 @@ class DashPlayer:
                                 play_segment['bitrate'], self.playback_timer.time()))
 
                         #tile code
-                        segment, self.needed_tiles = self.tile_getter.get_tiles()
+                        segment, self.tiles_in_segment = self.tile_getter.get_tiles()
+
+                        if self.TP:
+                            self.unneeded_tiles, self.needed_tiles = linePriority(self.tiles_in_segment)
+                        else:
+                            self.needed_tiles = self.tiles_in_segment
+
                         if not set(play_segment['tiles_in_segment']).issuperset(self.needed_tiles):
                             config_dash.LOG.info("Entering buffering stage after {} seconds of playback".format( self.playback_timer.time()))
                             self.playback_timer.pause()
                             interruption_start = time.time()
                             config_dash.JSON_HANDLE['playback_info']['interruptions']['count'] += 1
 
-                            while not set(play_segment['tiles_in_segment']).issuperset(self.needed_tiles):
+                            self.emergency_tiles = list(set(self.needed_tiles) - set(play_segment['tiles_in_segment']))
+                            while len(self.emergency_tiles) > 0:
                                 time.sleep(0.01)
 
                             interruption_end = time.time()
                             interruption = interruption_end - interruption_start
+
+                            self.rebuf_lock.acquire()
+                            self.rebuf += interruption
+                            self.rebuf_lock.release()
 
                             config_dash.JSON_HANDLE['playback_info']['interruptions']['events'].append({
                                 "timeframe": (interruption_start, interruption_end),
@@ -246,7 +291,7 @@ class DashPlayer:
         config_dash.LOG.debug("Incrementing buffer_length by {}. dash_buffer = {}".format(
             segment['playback_length'], self.buffer_length))
         self.buffer_length_lock.release()
-        self.log_entry(action="Writing", bitrate=segment['bitrate'])
+        self.log_entry(action="Writing", bitrate=segment['bitrate'], ssim=segment['ssim'])
 
     def update_tiles(self, tiles):
         while(self.current_segment == None):
@@ -269,7 +314,7 @@ class DashPlayer:
         self.log_entry("Stopped")
         config_dash.LOG.info("Stopped the playback")
 
-    def log_entry(self, action, bitrate=0):
+    def log_entry(self, action, bitrate=0, ssim=0):
         """Method to log the current state"""
 
         if self.buffer_log_file:
@@ -281,10 +326,10 @@ class DashPlayer:
             if not os.path.exists(self.buffer_log_file):
                 header_row = "EpochTime,CurrentPlaybackTime,CurrentBufferSize,CurrentPlaybackState,Action,Bitrate".split(",")
                 stats = (log_time, str(self.playback_timer.time()), self.buffer.qsize(),
-                         self.playback_state, action,bitrate)
+                         self.playback_state, action,bitrate, ssim)
             else:
                 stats = (log_time, str(self.playback_timer.time()), self.buffer.qsize(),
-                         self.playback_state, action,bitrate)
+                         self.playback_state, action,bitrate, ssim)
             str_stats = [str(i) for i in stats]
             with open(self.buffer_log_file, "a") as log_file_handle:
                 result_writer = csv.writer(log_file_handle, delimiter=",")
@@ -292,4 +337,4 @@ class DashPlayer:
                     result_writer.writerow(header_row)
                 result_writer.writerow(str_stats)
             config_dash.LOG.info("BufferStats: EpochTime=%s,CurrentPlaybackTime=%s,CurrentBufferSize=%s,"
-                                 "CurrentPlaybackState=%s,Action=%s,Bitrate=%s" % tuple(str_stats))
+                                 "CurrentPlaybackState=%s,Action=%s,Bitrate=%s,Ssim=%s" % tuple(str_stats))
