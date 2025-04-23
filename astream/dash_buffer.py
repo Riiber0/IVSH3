@@ -10,7 +10,7 @@ from util import linePriority
 
 # Durations in seconds
 PLAYER_STATES = ['INITIALIZED', 'INITIAL_BUFFERING', 'PLAY',
-                 'PAUSE', 'BUFFERING', 'STOP', 'END']
+                 'PAUSE', 'BUFFERING', 'TILE_MISS', 'STOP', 'END']
 EXIT_STATES = ['STOP', 'END']
 
 
@@ -225,6 +225,8 @@ class DashPlayer:
 
                         if not set(play_segment['tiles_in_segment']).issuperset(self.needed_tiles):
                             config_dash.LOG.info("Entering buffering stage after {} seconds of playback".format( self.playback_timer.time()))
+                            self.set_state("TILE_MISS")
+                            self.log_entry("Play-TileMiss")
                             self.playback_timer.pause()
                             interruption_start = time.time()
                             config_dash.JSON_HANDLE['playback_info']['interruptions']['count'] += 1
@@ -246,6 +248,8 @@ class DashPlayer:
 
                             config_dash.JSON_HANDLE['playback_info']['interruptions']['total_duration'] += interruption
                             config_dash.LOG.info("Duration of interruption = {}".format(interruption))
+                            self.set_state("PLAY")
+                            self.log_entry("TileMiss-Play")
                             self.playback_timer.start()
 
                         # Duration for which the video was played in seconds (integer)

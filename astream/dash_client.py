@@ -167,6 +167,7 @@ def download_segment(segment_url, dash_folder, download=False):
 
     segment_size = glueConnection.download_segment_PM(segment_url)
     if segment_size < 0:
+        config_dash.JSON_HANDLE['playback_info']['connection_loss'] += 1
         raise ValueError("invalid segment_size, connection dropped")
     return segment_size, segment_name
 
@@ -185,6 +186,7 @@ def download_segment_priority(segment_url, priority, dash_folder, download=False
 
     segment_size = glueConnection.download_segment_priority_PM(segment_url, priority)
     if segment_size < 0:
+        config_dash.JSON_HANDLE['playback_info']['connection_loss'] += 1
         raise ValueError("invalid segment_size, connection dropped")
     return segment_size, segment_name
 
@@ -520,6 +522,11 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
 
 
             total_segment_size = 0
+            if len(new_tiles) > 0 or emergency_flag:
+                glueConnection.connectPM()
+            else:
+                continue
+
             for tile in tiles:
                 bitrate = current_bitrate
                 # print("{} {} {}".format(segment_number, bitrate, tile))
@@ -558,7 +565,7 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
 
                         threads_highP.append(t)
 
-                    downloaded_tiles[segment_number][bitrate][tile] = True
+                    #downloaded_tiles[segment_number][bitrate][tile] = True
 
             if download_flag:
                 download_flag = True
@@ -623,16 +630,19 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
                 config_dash.LOG.info("{} : The total downloaded = {}, segment_size = {}, segment_number = {}".format(
                                     playback_type.upper(), total_downloaded, segment_size, segment_number))
                 download_flag = False
-
-            if NO_KEEP_ALIVE:
-                #print('no keep alive')
-                glueConnection.closeConnection()
+                if NO_KEEP_ALIVE:
+                    #print('no keep alive')
+                    glueConnection.closeConnection()
 
             if emergency_flag:
                 emergency_flag = False
                 last_segment = segment_number
                 dash_player.emergency_tiles = []
                 dash_player.current_segment['tiles_in_segment'].extend(tiles)
+
+            for tile in tiles_in_segment:
+                downloaded_tiles[segment_number][bitrate][tile] = True
+                
 
         if previous_bitrate:
             if previous_bitrate < current_bitrate:
@@ -1171,6 +1181,8 @@ def main():
 
     write_json()
     print_interruptions_info()
+    print("total stream connection loss: {}".format(config_dash.JSON_HANDLE['playback_info']['connection_loss']))
+    os.system('touch /home/vagrant/workspace/Dash360-sa-ecf/dash/temp')
     return 0
 
 if __name__ == "__main__":
