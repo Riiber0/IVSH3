@@ -50,6 +50,7 @@ class DashPlayer:
         self.current_segment = None
         self.buffer_log_file = config_dash.BUFFER_LOG_FILENAME
         # 360 variables
+        self.tilemiss = False
         self.rebuf = 0
         self.rebuf_lock = threading.Lock()
         self.tile_getter = None
@@ -149,9 +150,12 @@ class DashPlayer:
                 else:
                     # If the RE_BUFFERING_DURATION is greate than the remiang length of the video then do not wait
                     remaining_playback_time = self.playback_duration - self.playback_timer.time()
-                    if ((self.buffer.qsize() >= config_dash.RE_BUFFERING_COUNT) or (
+                    if (((self.buffer.qsize() >= config_dash.RE_BUFFERING_COUNT) or (
                             config_dash.RE_BUFFERING_COUNT * self.segment_duration >= remaining_playback_time
-                            and self.buffer.qsize() > 0)):
+                            and self.buffer.qsize() > 0)) and not self.tilemiss) or (
+                            set(play_segment['tiles_in_segment']).issuperset(self.needed_tiles)
+                            and self.tilemiss):
+
                         buffering = False
                         if interruption_start:
                             interruption_end = time.time()
@@ -186,25 +190,28 @@ class DashPlayer:
                     if self.playback_timer.time() == self.playback_duration:
                         self.set_state("END")
                         self.log_entry("Play-End")
-                    if self.buffer.qsize() == 0:
-                        config_dash.LOG.info("Buffer empty after {} seconds of playback".format(
-                            self.playback_timer.time()))
-                        self.playback_timer.pause()
-                        self.set_state("BUFFERING")
-                        self.log_entry("Play-Buffering")
-                        continue
-                    # Read one the segment from the buffer
-                    # Acquire Lock on the buffer and read a segment for it
-                    self.buffer_lock.acquire()
-                    play_segment = self.buffer.get()
-                    self.current_segment = play_segment
-                    self.buffer_lock.release()
-                    config_dash.LOG.info("Reading the segment number {} with length {} from the buffer at playtime {}".format(
-                        play_segment['segment_number'], play_segment["playback_length"], self.playback_timer.time()))
-                    self.log_entry(action="StillPlaying", bitrate=play_segment["bitrate"], ssim=play_segment['ssim'])
+                    if self.tilemiss:
+                        self.tilemiss = False
+                    else:
+                        if self.buffer.qsize() == 0:
+                            config_dash.LOG.info("Buffer empty after {} seconds of playback".format(
+                                self.playback_timer.time()))
+                            self.playback_timer.pause()
+                            self.set_state("BUFFERING")
+                            self.log_entry("Play-Buffering")
+                            continue
+                        # Read one the segment from the buffer, if rebuffering not caused by tilemiss
+                        # Acquire Lock on the buffer and read a segment for it
+                        self.buffer_lock.acquire()
+                        play_segment = self.buffer.get()
+                        self.current_segment = play_segment
+                        self.buffer_lock.release()
+                        config_dash.LOG.info("Reading the segment number {} with length {} from the buffer at playtime {}".format(
+                            play_segment['segment_number'], play_segment["playback_length"], self.playback_timer.time()))
+                        self.log_entry(action="StillPlaying", bitrate=play_segment["bitrate"], ssim=play_segment['ssim'])
 
-                    # Calculate time playback when the segment finishes
-                    future = self.playback_timer.time() + play_segment['playback_length']
+                        # Calculate time playback when the segment finishes
+                        future = self.playback_timer.time() + play_segment['playback_length']
 
                     # Start the playback
                     self.playback_timer.start()
@@ -216,6 +223,23 @@ class DashPlayer:
                                 play_segment['bitrate'], self.playback_timer.time()))
 
                         #tile code
+                        segment, self.tiles_in_segment = self.tile_getter.get_tiles()
+
+                        if self.TP:
+                            self.unneeded_tiles, self.needed_tiles = linePriority(self.tiles_in_segment)
+                        else:
+                            self.needed_tiles = self.tiles_in_segment
+
+                        if not set(play_segment['tiles_in_segment']).issuperset(self.needed_tiles):
+                            self.emergency_tiles = list(set(self.needed_tiles) - set(play_segment['tiles_in_segment']))
+                            self.tilemiss = True
+                            self.playback_timer.pause()
+                            self.set_state("BUFFERING")
+                            self.log_entry("Play-Buffering")
+                            break
+
+                        #tile code(old)
+                        """
                         segment, self.tiles_in_segment = self.tile_getter.get_tiles()
 
                         if self.TP:
@@ -251,6 +275,7 @@ class DashPlayer:
                             self.set_state("PLAY")
                             self.log_entry("TileMiss-Play")
                             self.playback_timer.start()
+                        """
 
                         # Duration for which the video was played in seconds (integer)
                         if self.playback_timer.time() >= self.playback_duration:
