@@ -78,6 +78,7 @@ extern void ClientSetup(GoUint8 usequic, GoUint8 mp, GoUint8 ms, GoUint8 keepali
 extern void CloseConnection();
 extern GoInt DownloadSegment(GoString segmentURL);
 extern GoInt DownloadSegmentPriority(GoString segmentURL, GoUint8 segmentPriority);
+extern void Connect();
 extern void StartLogging(GoUint period);
 extern void StopLogging();
 

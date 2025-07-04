@@ -28,8 +28,11 @@ def setupLib(sa_ecf):
     lib.CloseConnection.argtypes = []
     lib.StartLogging.argtypes = [c_uint]
     lib.StopLogging.argtypes = []
+    lib.Connect.argtypes = []
     lib.DownloadSegmentPriority.argtypes = [GoString, c_ubyte]
 
+def connectPM():
+    lib.Connect()
 
 def setupPM(useQUIC, useMP, useMS, keepAlive, schedulerName, congestionControl='cubic'):
     scheduler = GoString(schedulerName.encode('ascii'), len(schedulerName))

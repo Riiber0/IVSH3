@@ -204,7 +204,7 @@ def download_thread(playback_type, tile, segment_url, priority, file_identifier,
 
         segment_download_time = timeit.default_timer() - start_time
         previous_download_times.append(segment_download_time)
-        config_dash.LOG.info("{}: Downloaded segment {}".format(playback_type.upper(), segment_url))
+        #config_dash.LOG.info("{}: Downloaded segment {}".format(playback_type.upper(), segment_url))
     except IOError as e:
         config_dash.LOG.error('Unable to save segment %s' % e)
         os._exit(1)
@@ -351,9 +351,9 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
         for i in range(0, len(bitrates)):
             ssims[segment][bitrates[i]] = ssims[segment][b[i]]
 
-    sizes = dict()
+    sizes = list()
     for bitrate in dp_list[segment_count]:
-        sizes[bitrate] = dp_object.video[bitrate].segment_size/(1.25 * 10**7)
+        sizes.append((dp_object.video[bitrate].segment_size*8)/(1024*1024))
 
     bitrates = list(dp_object.video.keys())
     bitrates.sort()
@@ -400,7 +400,7 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
     gelato_data = {
             'buffer': 0,
             'cum_rebuf': 0,
-            'sizes': [list(sizes.values()) for i in range(5)],
+            'sizes': [sizes for i in range(0, 5)],
             'ssims': ssim_list[0:5],
             'channel_name': 'AStream360'
     }
@@ -411,7 +411,7 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
     elif TILE_READER == "ALL":
         tileReader = AllReader(dash_player.playback_timer, total_tiles, segment_duration)
     elif TILE_READER.upper() == "PERFPREDICT":
-        tileReader = PerfPredict(dash_player.playback_timer, HEAD_TRACE_PATH+'move_alert.csv', segment_duration, PREDICT_TIME)
+        tileReader = PerfPredict(dash_player.playback_timer, HEAD_TRACE_PATH+'move_alert.csv', segment_duration, float(PREDICT_TIME))
 
     #tile getter
     if TILE_GETTER or TILE_READER == "PERFPREDICT":
@@ -453,6 +453,7 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
     segment_number = dp_object.video[current_bitrate].start
     download_flag = False
     while dash_player.playback_state not in dash_buffer.EXIT_STATES:
+        current_priority = 0xff
         segment_number, n_tiles = tileReader.get_tiles()
         if segment_number <= len(dp_list.keys()):
 
@@ -485,10 +486,14 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
 
                 if not check_segment_in_buffer(segment_number, dash_player):
                     new_segment = True
+                    segment_increase = 0
 
-                tiles = tiles_in_segment.copy()
-                tiles += new_tiles
-                tiles.sort()
+                #Unstable
+                #tiles = tiles_in_segment.copy()
+                #tiles += new_tiles
+                #tiles.sort()
+
+                tiles = n_tiles
 
                 #Bitrate selection
                 if BITRATE is not None:
@@ -547,6 +552,10 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
                         else:
                             bitrate = current_bitrate
 
+                elif EXPERIMENT:
+                    priority = current_priority
+                    current_priority = current_priority - 1
+
                 else:
                     priority = 0xff
                     #bitrate = current_bitrate
@@ -576,6 +585,7 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
                 #downloaded_tiles[segment_number][bitrate][tile] = True
 
             if download_flag:
+                start_time = timeit.default_timer()
                 for t in threads_highP + threads_lowP:
                     t.start()
 
@@ -599,7 +609,7 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
                 for t in threads_lowP:
                     t.join()
 
-                segment_download_time = max(download_times_t)
+                segment_download_time = timeit.default_timer() - start_time
                 total_segment_size = sum(download_sizes_t)
 
                 previous_segments_times.append(segment_download_time)
@@ -624,7 +634,7 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
                 gelato_data['past_chunk'] = {
                             'delay': segment_download_time,
                             'ssim': ssims[segment_number][bitrate],
-                            'size': sizes[bitrate]
+                            'size': (total_segment_size*8)/(1024*1024)
                 }
                 l = ssim_list[int(segment_number):int(segment_number)+5]
                 if len(l) < 5 and len(l) > 0:
@@ -1115,6 +1125,9 @@ def create_arguments(parser):
     parser.add_argument('-br', '--BITRATE_REDUCTION', action='store_true',
                         default=False,
                         help="reduce bitrate with priority")
+    parser.add_argument('-exp', '--EXPERIMENT', action='store_true',
+                        default=False,
+                        help="Individiual priority")
 
 
 def main():

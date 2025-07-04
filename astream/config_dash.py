@@ -47,7 +47,8 @@ JSON_HANDLE['playback_info'] = {'start_time': None,
                                 'initial_buffering_duration': None,
                                 'interruptions': {'count': 0, 'events': list(), 'total_duration': 0},
                                 'up_shifts': 0,
-                                'down_shifts': 0
+                                'down_shifts': 0,
+                                'connection_loss': 0
                                 }
 # Constants for the BASIC-2 adaptation scheme
 BASIC_THRESHOLD = 1

@@ -148,7 +148,6 @@ class PerfPredict(TileDelivery):
                 move_alert_time = float(move_alert_l.popleft())
             
             self.last_segment = self.segment
-            time.sleep(0.01)
 
 
     def start(self):
@@ -182,7 +181,7 @@ if __name__ == '__main__':
     """test"""
     r = StopWatch()
     r.start()
-    d = NarrowReader(r, "move_alert.csv", 4)
+    d = PerfPredict(r, "move_alert.csv", 4, 3.5)
     d.start()
     print(d.get_tiles())
         

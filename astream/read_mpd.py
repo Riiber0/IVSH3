@@ -325,7 +325,7 @@ def read_mpd(mpd_file, dashplayback, bitratefilter = None):
                         media_object[bandwidth].start = int(adaptation_set.attrib['startWithSAP'])
                         media_object[bandwidth].base_url = base_urls[representation_id[0]]
                         media_object[bandwidth].initialization = media_object[bandwidth].base_url 
-                        media_object[bandwidth].segment_size = segment_duration * bandwidth / timescale
+                        media_object[bandwidth].segment_size = (segment_duration * bandwidth / timescale)/(200*15)
                         media_object[bandwidth].segment_duration = video_segment_duration
                         media_object[bandwidth].ssim = representation.attrib['ssim']
 
