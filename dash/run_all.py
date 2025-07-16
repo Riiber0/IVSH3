@@ -69,12 +69,12 @@ def client(trace1, rtt1, trace2, rtt2, p, s, m, t):
         client_command.append('-mp')
     if s == 'ms':
         client_command.append('-ms')
-    if m != 'b' and m != 'exp':
-        client_command.append('-tp')
-    if m == 'br':
-        client_command.append('-br')
+
+    client_command.append('-tp')
+    if m == 'b':
+        client_command.append('uni')
     if m == 'exp':
-        client_command.append('-exp')
+        client_command.append('group')
 
     date = datetime.datetime.now()
     filename = p + '-' + s + '-' + m + '-' + 'unagi' + '_'+ index + '_' + t.replace('.', '') + '_' + date.strftime("%H-%M-%S_%d-%m-%y")+'.txt'
@@ -99,7 +99,7 @@ def run_set():
 
     runs = 0
     global index
-    total_runs = 15
+    total_runs = 10
     while(runs < total_runs):
         index = str(runs)
 

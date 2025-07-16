@@ -105,7 +105,9 @@ func listLocalIPs() {
 
 //export Connect
 func Connect() {
-        createRemoteClient()
+	if h2client == nil{
+		createRemoteClient()
+	}
 }
 
 //export DownloadSegment
