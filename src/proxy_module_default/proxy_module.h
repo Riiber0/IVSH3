@@ -76,6 +76,7 @@ extern "C" {
 
 extern void ClientSetup(GoUint8 usequic, GoUint8 mp, GoUint8 ms, GoUint8 keepalive, GoString scheduler, GoString cc);
 extern void CloseConnection();
+extern void Connect();
 extern GoInt DownloadSegment(GoString segmentURL);
 
 //just for conn.py compatibility

@@ -103,12 +103,20 @@ func listLocalIPs() {
 	}
 }
 
+//export Connect
+func Connect() {
+	if hclient == nil {
+		createRemoteClient()
+	}
+}
+
 //export DownloadSegment
 func DownloadSegment(segmentURL string) int {
 
-	if hclient == nil || !keepAlive {
+	if hclient == nil {
 		createRemoteClient()
 	}
+
 
 	// Send request to the remote host
 	rsp, err := hclient.Get(segmentURL)
@@ -152,10 +160,7 @@ func createRemoteClient() {
 			// Use a HTTP/2.0 connection via QUIC, default API
 			roundTripper = &h2quic.RoundTripper{
 				TLSClientConfig: tlsConfig,
-				QuicConfig: &quic.Config{CreatePaths: useMP,
-							IdleTimeout: 20 * time.Second,
-							KeepAlive: true,
-							HandshakeTimeout: 20 * time.Second,},
+				QuicConfig: &quic.Config{CreatePaths: useMP},
 			}
 
 			hclient = &http.Client{
@@ -186,7 +191,7 @@ func createRemoteClient() {
 //export StartLogging
 func StartLogging(period uint) {
 
-	os.Setenv("QUIC_GO_LOG_LEVEL", "INFO")
+	os.Setenv("QUIC_GO_LOG_LEVEL", "ERROR")
 	/*
 	if logTicker == nil {
 		logTicker = time.NewTicker(time.Duration(period) * time.Millisecond)

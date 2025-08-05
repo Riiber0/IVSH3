@@ -12,7 +12,7 @@ class TileDelivery:
         self.playback_timer = timer
         self.segment_duration = segment_duration
         self.segment = 1
-        self.last_segment = None
+        self.last_segment = 1
         self.lock = threading.Lock()
     
     @abstractmethod
@@ -102,6 +102,10 @@ class PerfPredict(TileDelivery):
         tiles_sum = list(tiles_sum)
         tiles_sum = [int(tile) for tile in tiles_sum]
 
+        tiles_d = dict()
+        for tile in tiles_sum:
+            tiles_d[tile] = move_alert_time
+
         i = 0.0
         while i <= self.predict_time:
             if i >= move_alert_time:
@@ -110,10 +114,12 @@ class PerfPredict(TileDelivery):
                 new_tiles = self.df.iloc[df_index][1:]
                 new_tiles = list(new_tiles.dropna())
                 new_tiles = [int(tile) for tile in new_tiles]
-                
+
+                new_tiles_d = dict()
                 for tile in new_tiles:
-                    if tile not in tiles_sum:
-                        tiles_sum.append(tile)
+                    new_tiles_d[tile] = move_alert_time
+                
+                tiles_d = {**new_tiles_d, **tiles_d}
 
                 #change next alert time
                 move_alert_time = float(move_alert_l.popleft())
@@ -121,12 +127,14 @@ class PerfPredict(TileDelivery):
             i += 0.01
         self.lock.release()
 
-
-        tiles_sum.sort()
-        self.tiles = tiles_sum
+        self.tiles = tiles_d
         while True:
             #change segment
             self.segment = (self.playback_timer.time() + self.predict_time)//self.segment_duration + 1
+
+            if self.segment != self.last_segment:
+                self.tiles = {}
+
             if (self.playback_timer.time() + self.predict_time) >= move_alert_time:
 
                 #change tiles
@@ -136,19 +144,21 @@ class PerfPredict(TileDelivery):
                     self.lock.release()
                     return
 
-                if self.segment != self.last_segment:
-                    self.tiles = []
 
                 current_tiles = [int(tile) for tile in self.df.iloc[df_index][1:].dropna()]
                 new_tiles = [tile for tile in current_tiles if tile not in self.tiles]
-                self.tiles += new_tiles
+
+                new_tiles_d = dict()
+                for tile in new_tiles:
+                    new_tiles_d[tile] = move_alert_time
+
+                self.tiles = {**new_tiles_d, **self.tiles}
                 self.lock.release()
 
                 #change next alert time
                 move_alert_time = float(move_alert_l.popleft())
             
             self.last_segment = self.segment
-            time.sleep(0.01)
 
 
     def start(self):
@@ -182,7 +192,7 @@ if __name__ == '__main__':
     """test"""
     r = StopWatch()
     r.start()
-    d = NarrowReader(r, "move_alert.csv", 4)
+    d = PerfPredict(r, "move_alert.csv", 4, 3.5)
     d.start()
     print(d.get_tiles())
         

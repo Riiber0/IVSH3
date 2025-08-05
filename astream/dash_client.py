@@ -43,7 +43,8 @@ import dash_buffer
 import time
 import pandas as pd
 from tile_delivery import *
-from threading import Thread
+from priority_manager import GroupPriority, UniPriority
+from threading import Thread, Lock
 from util import linePriority, outer_zone_percentage, outer_zone_fixed
 
 # Constants
@@ -60,9 +61,16 @@ SEGMENT_LIMIT = None
 
 HEAD_TRACE_PATH = "/home/vagrant/workspace/Dash360-sa-ecf/astream/"
 
-#Globals for threads
-total_downloaded = None
-
+#Globals chunks
+chunk_lock = Lock()
+chunk_size = 0
+chunk_start_time = 0
+chunk_end_time = 0
+chunk_tiles = 0
+chunk_stat_ready = False
+last_chunk_time = 0
+last_chunk_size = 0
+last_chunk_tiles = 0
 
 class DashPlayback:
     """
@@ -152,6 +160,40 @@ def gelato_close(conn):
     json_len = struct.pack("!H", len(data))
     conn.sendall(json_len + data)
 
+def update_chunk(size, time):
+    global chunk_size
+    global chunk_end_time
+    global chunk_tiles
+    chunk_tiles += 1
+    chunk_lock.acquire()
+    chunk_size += size
+    chunk_end_time = time
+    config_dash.LOG.info('Current Batch - tiles{} Size = {} time = {}'.format(chunk_tiles, chunk_size, str(time)))
+    chunk_lock.release()
+
+def start_chunk(start_time):
+    chunk_lock.acquire()
+    global last_chunk_size
+    global last_chunk_time
+    global last_chunk_tiles
+    global chunk_size
+    global chunk_tiles
+    global chunk_start_time
+    global chunk_end_time
+    if chunk_size > 0:
+        last_chunk_tiles = chunk_tiles
+        last_chunk_size = chunk_size
+        print('{} {}'.format(chunk_end_time, chunk_start_time))
+        last_chunk_time = chunk_end_time - chunk_start_time
+        chunk_stat_ready = True
+        config_dash.LOG.info('Last Batch - {}. Size = {}, time {}'.format(last_chunk_tiles, last_chunk_size, str(last_chunk_time)))
+
+    chunk_size = 0
+    chunk_tiles = 0
+    chunk_start_time = start_time
+    config_dash.LOG.info('New Batch. time = {}'.format(str(start_time)))
+    chunk_lock.release()
+
 def download_segment(segment_url, dash_folder, download=False):
     """ Module to download the segment with one
         permanent HTTP connection.
@@ -191,7 +233,7 @@ def download_segment_priority(segment_url, priority, dash_folder, download=False
     return segment_size, segment_name
 
 def download_thread(playback_type, tile, segment_url, priority, file_identifier, download,
-                    previous_download_times, tiles_in_segment, download_sizes_t, segment_files):
+                    previous_download_times, tiles_in_segment, download_sizes_t, segment_files, priority_m):
     config_dash.LOG.info("{}: Downloading file {}".format(playback_type.upper(), segment_url))
     
     try:
@@ -202,14 +244,17 @@ def download_thread(playback_type, tile, segment_url, priority, file_identifier,
         else:
             segment_size, segment_filename = download_segment(segment_url, file_identifier, download)
 
-        segment_download_time = timeit.default_timer() - start_time
+        end_time = timeit.default_timer()
+        segment_download_time = end_time - start_time
         previous_download_times.append(segment_download_time)
-        config_dash.LOG.info("{}: Downloaded segment {}".format(playback_type.upper(), segment_url))
+        #config_dash.LOG.info("{}: Downloaded segment {}".format(playback_type.upper(), segment_url))
     except IOError as e:
         config_dash.LOG.error('Unable to save segment %s' % e)
         os._exit(1)
 
     tiles_in_segment.append(tile)
+    priority_m.update_priorities(priority)
+    update_chunk(segment_size, end_time)
     #segment_size = dp_object.video[current_bitrate].segment_size
 
     download_sizes_t.append(segment_size)
@@ -351,9 +396,9 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
         for i in range(0, len(bitrates)):
             ssims[segment][bitrates[i]] = ssims[segment][b[i]]
 
-    sizes = dict()
+    sizes = list()
     for bitrate in dp_list[segment_count]:
-        sizes[bitrate] = dp_object.video[bitrate].segment_size/(1.25 * 10**7)
+        sizes.append((dp_object.video[bitrate].segment_size*8)/(1024*1024))
 
     bitrates = list(dp_object.video.keys())
     bitrates.sort()
@@ -375,7 +420,7 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
     recent_download_sizes = []
     previous_download_times = []
     total_tiles = len(dp_list[segment_count][bitrate])
-    tiles = []
+    tiles = dict()
     tiles_in_segment = []
     pre_ulrs_dict = None # (tile : [bitrate, stream_priotyt]), created by ABR
     urls_dict = None # (file_url : stream_prioryt), created after pre_url_dict mapping
@@ -387,8 +432,7 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
     last_segment = -1
     new_segment = False
     #tread variables
-    threads_highP = []
-    threads_lowP = []
+    threads = []
     download_sizes_t = []
     download_times_t = []
     #buffer varialbes
@@ -400,7 +444,7 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
     gelato_data = {
             'buffer': 0,
             'cum_rebuf': 0,
-            'sizes': [list(sizes.values()) for i in range(5)],
+            'sizes': [sizes for i in range(0, 5)],
             'ssims': ssim_list[0:5],
             'channel_name': 'AStream360'
     }
@@ -411,7 +455,7 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
     elif TILE_READER == "ALL":
         tileReader = AllReader(dash_player.playback_timer, total_tiles, segment_duration)
     elif TILE_READER.upper() == "PERFPREDICT":
-        tileReader = PerfPredict(dash_player.playback_timer, HEAD_TRACE_PATH+'move_alert.csv', segment_duration, PREDICT_TIME)
+        tileReader = PerfPredict(dash_player.playback_timer, HEAD_TRACE_PATH+'move_alert.csv', segment_duration, float(PREDICT_TIME))
 
     #tile getter
     if TILE_GETTER or TILE_READER == "PERFPREDICT":
@@ -421,6 +465,12 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
         dash_player.tile_getter = tileReader
 
     tileReader.start()
+
+    #priority manager
+    if TP.upper() == "GROUP":
+        priority_m = GroupPriority(config_dash.MAX_BUFFER_SIZE + 1)
+    elif TP.upper() == "UNI":
+        priority_m = UniPriority()
 
     #outer zone
     if OUTER_ZONE == "P":
@@ -452,20 +502,23 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
     # waiting for the player to finish playing
     segment_number = dp_object.video[current_bitrate].start
     download_flag = False
+    first_flag = True
     while dash_player.playback_state not in dash_buffer.EXIT_STATES:
-        segment_number, n_tiles = tileReader.get_tiles()
+        segment_number, reading_dict = tileReader.get_tiles()
         if segment_number <= len(dp_list.keys()):
 
             if dash_player.current_segment != None and len(dash_player.emergency_tiles) > 0:
                 segment_number = get_player_segment_number(dash_player)
-                tiles = dash_player.emergency_tiles
+                tiles_l = dash_player.emergency_tiles
+                tiles = {tile:255 for tile in tiles_l}
                 config_dash.LOG.info("emergency call: segment {} total {} tiles{}".format(segment_number, len(tiles), tiles))
                 current_bitrate = dash_player.current_segment['bitrate']
                 tiles_in_segment = dash_player.current_segment['tiles_in_segment'] 
                 emergency_flag = True
 
             else:
-
+                
+                n_tiles = list(reading_dict.keys())
                 tiles_in_segment = get_segment_tile_buffer(segment_number, dash_player) 
                 new_tiles = [tile for tile in n_tiles if tile not in tiles_in_segment]
 
@@ -485,10 +538,12 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
 
                 if not check_segment_in_buffer(segment_number, dash_player):
                     new_segment = True
+                    segment_increase = 0
 
-                tiles = tiles_in_segment.copy()
-                tiles += new_tiles
-                tiles.sort()
+                #Unstable
+                #tiles = tiles_in_segment.copy()
+                #tiles += new_tiles
+                #tiles.sort()
 
                 #Bitrate selection
                 if BITRATE is not None:
@@ -515,77 +570,49 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
                     action = gelato_get_action(conn, gelato_data)
                     current_bitrate = bitrates[action]
                     
-                if len(tiles) == 0:
+                if len(new_tiles) == 0:
                     continue
 
-                if TP:
-                    lowP, highP = linePriority(tiles)
+                #priority selection
+                tiles = dict()
+                tiles = {tile:reading_dict[tile] for tile in new_tiles}
 
-                if OUTER_ZONE and int(OUTER_ZONE_SIZE) > 0:
-                    lowP += outer_zone_func(tiles, total_tiles, OUTER_ZONE_SIZE)
-
-                tiles = new_tiles
-
+                tiles = priority_m.get_priority(tiles, segment_increase)
+                print(tiles)
 
             if len(tiles) > 0:
                 glueConnection.connectPM()
+                download_flag = True
             else:
                 continue
 
             total_segment_size = 0
             for tile in tiles:
                 bitrate = current_bitrate
+                priority = tiles[tile]
                 # print("{} {} {}".format(segment_number, bitrate, tile))
-
-                if TP and tile in lowP:
-                    priority = 0x00
-
-                    if BITRATE_REDUCTION:
-                        if bitrates.index(current_bitrate) > 0:
-                            bitrate = bitrates[bitrates.index(current_bitrate) - 1]
-
-                        else:
-                            bitrate = current_bitrate
-
-                else:
-                    priority = 0xff
-                    #bitrate = current_bitrate
-
-                if downloaded_tiles[segment_number][bitrate][tile]:
-                    continue
-                else:
-                    download_flag = True
 
                 path_to_tiles = dp_list[segment_number][bitrate]
                 segment_url = urllib.parse.urljoin(domain, path_to_tiles[tile])
 
-                if TP and tile in lowP:
-                    t = Thread(target=download_thread, daemon=True,
-                                args=(playback_type, tile, segment_url, priority, file_identifier, download, 
-                                    download_times_t, tiles_in_segment, download_sizes_t, segment_files))
+                t = Thread(target=download_thread, daemon=True,
+                            args=(playback_type, tile, segment_url, priority, file_identifier, download, 
+                                previous_download_times, tiles_in_segment, recent_download_sizes, segment_files, priority_m))
 
-                    threads_lowP.append(t)
-
-                else:
-                    t = Thread(target=download_thread, daemon=True,
-                                args=(playback_type, tile, segment_url, priority,  file_identifier, download, 
-                                    download_times_t, tiles_in_segment, download_sizes_t, segment_files))
-
-                    threads_highP.append(t)
+                threads.append(t)
 
                 #downloaded_tiles[segment_number][bitrate][tile] = True
 
             if download_flag:
-                for t in threads_highP + threads_lowP:
+                start_time = timeit.default_timer()
+                start_chunk(start_time)
+                for t in threads:
                     t.start()
 
-                    """
-                    if not MS:
-                        t.join()
-                    """
-
-                for t in threads_highP:
+                if first_flag:
                     t.join()
+                    first_flag = False
+                    chunk_stat_ready = True
 
                 if new_segment:
                     segment_info = {'playback_length' : video_segment_duration,
@@ -596,35 +623,23 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
 
                     dash_player.write(segment_info)
 
-                for t in threads_lowP:
-                    t.join()
+                threads = []
 
-                segment_download_time = max(download_times_t)
-                total_segment_size = sum(download_sizes_t)
+            if not chunk_stat_ready:
+                pass
 
-                previous_segments_times.append(segment_download_time)
-
-                recent_download_sizes += download_sizes_t
-                previous_download_times += download_sizes_t
-                previous_segments_sizes.append(total_segment_size)
-                total_downloaded += total_segment_size
-
-                download_sizes_t = []
-                download_times_t = []
-                threads_highP = []
-                threads_lowP = []
-
-            if playback_type.upper() == 'SMART' and weighted_mean_object and new_segment:
+            elif playback_type.upper() == 'SMART' and weighted_mean_object and new_segment:
                 #print(get_segment_sizes(dp_object, segment_number))
                 weighted_mean_object.update_weighted_mean(get_segment_sizes(dp_object, segment_number)[current_bitrate], segment_download_time)
 
             elif playback_type.upper() == 'MAGURO' or playback_type.upper() == 'UNAGI' and new_segment:
+                gelato_flag = True
                 gelato_data['buffer'] = dash_player.get_buffer_length()
                 gelato_data['cum_rebuf'] = dash_player.get_rebuf()
                 gelato_data['past_chunk'] = {
-                            'delay': segment_download_time,
+                            'delay': last_chunk_time,
                             'ssim': ssims[segment_number][bitrate],
-                            'size': sizes[bitrate]
+                            'size': (last_chunk_size*8)/(1024*1024)
                 }
                 l = ssim_list[int(segment_number):int(segment_number)+5]
                 if len(l) < 5 and len(l) > 0:
@@ -644,11 +659,7 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
                 emergency_flag = False
                 last_segment = segment_number
                 dash_player.emergency_tiles = []
-                dash_player.current_segment['tiles_in_segment'].extend(tiles)
-
-            for tile in tiles_in_segment:
-                downloaded_tiles[segment_number][bitrate][tile] = True
-                
+                dash_player.current_segment['tiles_in_segment'].extend(list(tiles))
 
         if previous_bitrate:
             if previous_bitrate < current_bitrate:
@@ -1103,8 +1114,8 @@ def create_arguments(parser):
     parser.add_argument('-ms', '--MS', action='store_true', 
                         default=False,
                         help="Use mult-stream")
-    parser.add_argument('-tp', '--TP', action='store_true', 
-                        default=False,
+    parser.add_argument('-tp', '--TP', 
+                        default="UNI",
                         help="Priority for tiles in the center")
     parser.add_argument('-oz', '--OUTER_ZONE', 
                         default=False,
@@ -1115,7 +1126,6 @@ def create_arguments(parser):
     parser.add_argument('-br', '--BITRATE_REDUCTION', action='store_true',
                         default=False,
                         help="reduce bitrate with priority")
-
 
 def main():
     """ Main Program wrapper """

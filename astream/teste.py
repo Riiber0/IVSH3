@@ -4,28 +4,37 @@ from configure_log_file import configure_log_file
 from collections import defaultdict
 import conn as glueConnection
 import subprocess
+import time
+import sys
+import timeit
+import os
 
+mp = None
+ms = None
 
-glueConnection.setupLib(False)
-glueConnection.setupPM(True, True, False, False, 'lowRTT', 'olia')
+if len(sys.argv) > 1:
+    mp = True
+
+if len(sys.argv) > 2:
+    ms = True
+
+glueConnection.setupLib(ms)
+glueConnection.setupPM(True, mp, ms, False, 'lowRTT', 'olia')
+glueConnection.connectPM()
 
 segment_url = 'https://10.0.2.15:4242/bulk_file'
 
-print('command')
+print('downloading')
 
-#subprocess.run(['sudo', 'bash', '/home/vagrant/workspace/Dash360-sa-ecf/astream/setup_wifi_route.sh'])
-#subprocess.run(["cat", "/etc/iproute2/rt_tables"])
+start_time = timeit.default_timer()
 
-print('ip route show table local')
-subprocess.run(['ip', 'route', 'show', 'table', 'local'])
-print('ip route show table main')
-subprocess.run(['ip', 'route', 'show', 'table', 'main'])
-print('defalt')
-subprocess.run(['ip', 'route', 'show', 'table', 'default'])
-print('unspec')
-subprocess.run(['ip', 'route', 'show', 'table', 'unspec'])
+if ms:
+    segment_size = glueConnection.download_segment_priority_PM(segment_url, 0xff)
+else:
+    segment_size = glueConnection.download_segment_PM(segment_url)
 
-subprocess.run(['traceroute', '10.0.2.15'])
-segment_size = glueConnection.download_segment_PM(segment_url)
+download_time = timeit.default_timer() - start_time
 
-subprocess.run(['ifconfig'])
+print(f'downloaded size: {segment_size}, in {download_time}')
+
+os.system('touch /home/vagrant/workspace/Dash360-sa-ecf/dash/test_temp')

@@ -73,10 +73,7 @@ func ClientSetup(usequic, mp, ms, keepalive bool, scheduler string, cc string) {
 
 //export CloseConnection
 func CloseConnection() {
-	if hclient != nil {
-		hclient.CloseIdleConnections()
-		hclient = nil
-	} else if h2client!= nil {
+	if h2client!= nil {
 		h2client = nil
 	}
 	if roundTripper != nil {
@@ -106,11 +103,18 @@ func listLocalIPs() {
 	}
 }
 
+//export Connect
+func Connect() {
+	if h2client == nil{
+		createRemoteClient()
+	}
+}
+
 //export DownloadSegment
 func DownloadSegment(segmentURL string) int {
 
-	if hclient == nil {
-		createRemoteClient()
+	if h2client == nil{
+		return -1
 	}
 
 	// Send request to the remote host
@@ -137,9 +141,10 @@ func DownloadSegment(segmentURL string) int {
 //export DownloadSegmentPriority
 func DownloadSegmentPriority(segmentURL string, segmentPriority uint8) int {
 
-	if h2client == nil{
+	if h2client == nil {
 		createRemoteClient()
 	}
+
 
 	// Set stream priority
 	priority := &http2.PriorityParam{
@@ -152,7 +157,7 @@ func DownloadSegmentPriority(segmentURL string, segmentPriority uint8) int {
 	// Send request to the remote host
 	rsp, err := h2client.Get(segmentURL, priority)
 	if err != nil {
-		fmt.Printf("%s error: %s",logTag, err)
+		log.Println(logTag, "error : ", err)
 		return -1
 	}
 
@@ -161,7 +166,7 @@ func DownloadSegmentPriority(segmentURL string, segmentPriority uint8) int {
 	body := &bytes.Buffer{}
 	_, err = io.Copy(body, rsp.Body)
 	if err != nil {
-		fmt.Printf("%s error: %s",logTag, err)
+		log.Println(logTag, "error : ", err)
 		return -1
 	}
 	rsp.Body.Close()
@@ -181,10 +186,7 @@ func createRemoteClient() {
 			// Use a HTTP/2.0 connection via QUIC, sa-ecf API
 			roundTripper = &h2quic.RoundTripper{
 				TLSClientConfig: tlsConfig,
-				QuicConfig: &quic.Config{CreatePaths: useMP,
-							IdleTimeout: 20 * time.Second,
-							KeepAlive: true,
-							HandshakeTimeout: 20 * time.Second,},
+				QuicConfig: &quic.Config{CreatePaths: useMP},
 			}
 
 			h2client = &h2quic.Client{
@@ -231,7 +233,7 @@ func createRemoteClient() {
 //export StartLogging
 func StartLogging(period uint) {
 
-	os.Setenv("QUIC_GO_LOG_LEVEL", "INFO")
+	os.Setenv("QUIC_GO_LOG_LEVEL", "ERROR")
 	/*
 	if logTicker == nil {
 		logTicker = time.NewTicker(time.Duration(period) * time.Millisecond)
