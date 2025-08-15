@@ -59,7 +59,7 @@ const DefaultMaxReceiveConnectionFlowControlWindowClient = 24 * (1 << 20) // 24 
 const ConnectionFlowControlMultiplier = 1.5
 
 // MaxStreamsPerConnection is the maximum value accepted for the number of streams per connection
-const MaxStreamsPerConnection = 100
+const MaxStreamsPerConnection = 1000
 
 // MaxIncomingDynamicStreamsPerConnection is the maximum value accepted for the incoming number of dynamic streams per connection
 const MaxIncomingDynamicStreamsPerConnection = 100

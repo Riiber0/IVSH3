@@ -609,7 +609,6 @@ func (s *session) handleStreamFrame(frame *wire.StreamFrame) error {
 		// Print client statistics about its paths
 		s.pathsLock.RLock()
 		utils.Infof("Info for stream %x of %x", frame.StreamID, s.connectionID)
-		fmt.Printf("Info for stream %x of %x", frame.StreamID, s.connectionID)
 		for pathID, pth := range s.paths {
 			sntPkts, sntRetrans, sntLost := pth.sentPacketHandler.GetStatistics()
 			rcvPkts := pth.receivedPacketHandler.GetStatistics()

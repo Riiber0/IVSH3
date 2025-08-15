@@ -32,6 +32,8 @@ func newRequestWriter(headerStream quic.Stream) *requestWriter {
 		headerStream: headerStream,
 	}
 	rw.henc = hpack.NewEncoder(&rw.hbuf)
+
+	rw.henc.SetMaxDynamicTableSize(0) // bk-25 race condition, disable dynamic table header compression
 	return rw
 }
 

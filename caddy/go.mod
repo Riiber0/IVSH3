@@ -25,4 +25,4 @@ require (
 	gopkg.in/yaml.v2 v2.4.0
 )
 
-replace github.com/lucas-clemente/quic-go => ../src/sa-ecf
+replace github.com/lucas-clemente/quic-go => ../src/default_mpquic

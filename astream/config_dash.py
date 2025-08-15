@@ -69,7 +69,7 @@ RE_BUFFERING_COUNT = 1
 ALPHA_BUFFER_COUNT = 1
 BETA_BUFFER_COUNT = 2
 # Set the size of the buffer in terms of segments. Set to unlimited if 0 or None
-MAX_BUFFER_SIZE = 4
+MAX_BUFFER_SIZE = 2
 
 # ---------------------------------------------------
 # Netflix (Buffer-based) ADAPTATION

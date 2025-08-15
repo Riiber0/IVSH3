@@ -142,6 +142,7 @@ func DownloadSegment(segmentURL string) int {
 func DownloadSegmentPriority(segmentURL string, segmentPriority uint8) int {
 
 	if h2client == nil {
+		return -1
 		createRemoteClient()
 	}
 
@@ -158,7 +159,7 @@ func DownloadSegmentPriority(segmentURL string, segmentPriority uint8) int {
 	rsp, err := h2client.Get(segmentURL, priority)
 	if err != nil {
 		log.Println(logTag, "error : ", err)
-		return -1
+		return -2
 	}
 
 	// Synchronous (blocking) stream forwarding to buffer.
@@ -167,7 +168,8 @@ func DownloadSegmentPriority(segmentURL string, segmentPriority uint8) int {
 	_, err = io.Copy(body, rsp.Body)
 	if err != nil {
 		log.Println(logTag, "error : ", err)
-		return -1
+		fmt.Printf("error : ", err)
+		return -3
 	}
 	rsp.Body.Close()
 	recvBytes += uint64(body.Len())

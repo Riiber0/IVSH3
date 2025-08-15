@@ -49,14 +49,15 @@ class DashPlayer:
         self.buffer_lock = threading.Lock()
         self.current_segment = None
         self.buffer_log_file = config_dash.BUFFER_LOG_FILENAME
+        self.future = 0
         # 360 variables
         self.tilemiss = False
         self.rebuf = 0
         self.rebuf_lock = threading.Lock()
         self.tile_getter = None
         self.tiles_in_segment = None
-        self.needed_tiles = None
-        self.unneeded_tiles = None
+        self.needed_tiles = []
+        self.unneeded_tiles = []
         self.TP = tp
         self.emergency_tiles = []
         config_dash.LOG.info("VideoLength={},segmentDuration={},MaxBufferSize={},InitialBuffer(secs)={},"
@@ -150,6 +151,7 @@ class DashPlayer:
                 else:
                     # If the RE_BUFFERING_DURATION is greate than the remiang length of the video then do not wait
                     remaining_playback_time = self.playback_duration - self.playback_timer.time()
+                    self.emergency_tiles = [tile for tile in self.needed_tiles if tile not in play_segment['tiles_in_segment']]
                     if (((self.buffer.qsize() >= config_dash.RE_BUFFERING_COUNT) or (
                             config_dash.RE_BUFFERING_COUNT * self.segment_duration >= remaining_playback_time
                             and self.buffer.qsize() > 0)) and not self.tilemiss) or (
@@ -190,9 +192,7 @@ class DashPlayer:
                     if self.playback_timer.time() == self.playback_duration:
                         self.set_state("END")
                         self.log_entry("Play-End")
-                    if self.tilemiss:
-                        self.tilemiss = False
-                    else:
+                    elif not self.tilemiss:
                         if self.buffer.qsize() == 0:
                             config_dash.LOG.info("Buffer empty after {} seconds of playback".format(
                                 self.playback_timer.time()))
@@ -211,11 +211,12 @@ class DashPlayer:
                         self.log_entry(action="StillPlaying", bitrate=play_segment["bitrate"], ssim=play_segment['ssim'])
 
                         # Calculate time playback when the segment finishes
-                        future = self.playback_timer.time() + play_segment['playback_length']
+                        self.future = self.playback_timer.time() + play_segment['playback_length']
 
                     # Start the playback
+                    self.tilemiss = False
                     self.playback_timer.start()
-                    while self.playback_timer.time() < future:
+                    while self.playback_timer.time() < self.future:
                         # If playback hasn't started yet, set the playback_start_time
                         if not self.playback_start_time:
                             self.playback_start_time = time.time()
@@ -232,6 +233,7 @@ class DashPlayer:
 
                         if not set(play_segment['tiles_in_segment']).issuperset(self.needed_tiles):
                             self.emergency_tiles = list(set(self.needed_tiles) - set(play_segment['tiles_in_segment']))
+                            print(self.emergency_tiles)
                             self.tilemiss = True
                             self.playback_timer.pause()
                             self.set_state("BUFFERING")

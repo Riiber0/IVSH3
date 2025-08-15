@@ -62,8 +62,8 @@ def server(MP, s):
     print(server_command)
     return subprocess.Popen(server_command, shell=False)
 
-def client(trace1, rtt1, trace2, rtt2, p, s, m, t):
-    client_command = ["mpshell", rtt1, trace1, trace1, rtt2, trace2, trace2, PYTHON_RUNNER, CLIENT_LOCATION, '-m', 'https://10.0.2.15:4242/dash_tiled.mpd', '-q', '-tr', 'PERFPREDICT', '-tg','-nka', '-p', 'unagi', '-pt', t]
+def client(trace1, rtt1, trace2, rtt2, p, s, m, t, b):
+    client_command = ["mpshell", rtt1, trace1, trace1, rtt2, trace2, trace2, PYTHON_RUNNER, CLIENT_LOCATION, '-m', 'https://10.0.2.15:4242/dash_tiled.mpd', '-q', '-tr', 'PERFPREDICT', '-tg', '-p', 'unagi', '-pt', t, '-bm', b]
     
     if p == 'mp':
         client_command.append('-mp')
@@ -76,17 +76,22 @@ def client(trace1, rtt1, trace2, rtt2, p, s, m, t):
     if m == 'exp':
         client_command.append('group')
 
+    if b != '0':
+        client_command.append('-sm')
+        client_command.append('200')
+
     date = datetime.datetime.now()
-    filename = p + '-' + s + '-' + m + '-' + 'unagi' + '_'+ index + '_' + t.replace('.', '') + '_' + date.strftime("%H-%M-%S_%d-%m-%y")+'.txt'
+    filename = p + '-' + s + '-' + m + '-' + 'unagi' + '_'+ index + '_' + t.replace('.', '') + '_' + b + '_' + date.strftime("%H-%M-%S_%d-%m-%y")+'.txt'
     log = open(filename, 'w')
 
     print(client_command)
     return subprocess.run(client_command, shell=False, stdout = log, timeout = 300), log
 
 def run_set():
-    test_cases = ["mp-ms-exp", "mp-ms-b"]
+    test_cases = ["mp-df-b", "mp-ms-exp", "mp-ms-b", "sp-df-b"]
     abrs = ['unagi']
-    times = ['2.5', '3.0', '3.5']
+    times = ['1.5']
+    max_buffer = ["0", "1", "2"]
     hmd_h_traces = os.listdir('/home/vagrant/workspace/Dash360-sa-ecf/dash/hmd_traces/hmd_high_variance')
     hmd_l_traces = os.listdir('/home/vagrant/workspace/Dash360-sa-ecf/dash/hmd_traces/hmd_low_variance')
     hmd_l_path = '/home/vagrant/workspace/Dash360-sa-ecf/dash/hmd_traces/hmd_low_variance/'
@@ -100,11 +105,14 @@ def run_set():
     runs = 0
     global index
     total_runs = 10
+    t = "1.5"
     while(runs < total_runs):
         index = str(runs)
 
         random.seed(runs)
         trace1, trace2 = trace_selector()
+        #print(trace1)
+        #sys.exit(0)
         rtt1 = trace1.split('_')[2]
         rtt1 = rtt1.split('.')[0]
         rtt1 = str(int(rtt1)/2)
@@ -118,7 +126,7 @@ def run_set():
             p = test.split('-')[0]
             s = test.split('-')[1]
             m = test.split('-')[2]
-            for t in times:
+            for b in max_buffer:
 
                 #DIR = 'exp-' + test.split('.')[0] + abr
                 #if not os.path.exists(DIR):
@@ -135,9 +143,9 @@ def run_set():
                     try:
 
                         if test.split('-')[0] == 'mp':
-                            client_proc, log = client(TRACE_HIGH+trace1, rtt1, TRACE_MEDIUM+trace2, rtt2, p, s, m, t)
+                            client_proc, log = client(TRACE_HIGH+trace1, rtt1, TRACE_MEDIUM+trace2, rtt2, p, s, m, t, b)
                         else:
-                            client_proc, log = client(TRACE_HIGH+trace1, rtt1, TRACE_HIGH+trace1, rtt1, p, s, m, abr)
+                            client_proc, log = client(TRACE_HIGH+trace1, rtt1, TRACE_HIGH+trace1, rtt1, p, s, m, t, b)
 
                         log.close()
                         if os.path.exists('temp'):
