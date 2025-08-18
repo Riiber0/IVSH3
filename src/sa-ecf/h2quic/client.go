@@ -347,3 +347,12 @@ func authorityAddr(scheme string, authority string) (addr string) {
 	}
 	return net.JoinHostPort(host, port)
 }
+
+func (c *client) GetPakets() uint64{
+	if c.session == nil {
+		return 0
+	}
+	totalPkts := c.session.GetTotalPackets()
+
+	return totalPkts
+}

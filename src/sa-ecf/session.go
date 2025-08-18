@@ -995,3 +995,15 @@ func (s *session) RemoteAddr() net.Addr {
 func (s *session) GetVersion() protocol.VersionNumber {
 	return s.version
 }
+
+func (s *session) GetTotalPackets() uint64{
+
+	var totalPkts uint64 = 0
+	for pathID, pth := range s.paths {
+		rcvPkts := pth.receivedPacketHandler.GetStatistics()
+		totalPkts = totalPkts + rcvPkts
+		utils.Infof("Path: %x pkts: %d", pathID, rcvPkts)
+	}
+
+	return totalPkts
+}

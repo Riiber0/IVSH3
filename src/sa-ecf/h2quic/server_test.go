@@ -77,6 +77,9 @@ func (s *mockSession) RemoteAddr() net.Addr {
 func (s *mockSession) Context() context.Context {
 	return s.ctx
 }
+func (s *mockSession) GetTotalPackets() uint64 {
+	return 0
+}
 
 var _ = Describe("H2 server", func() {
 	var (

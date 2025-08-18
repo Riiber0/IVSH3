@@ -196,6 +196,19 @@ func (r *RoundTripper) OpenStream(hostname string, priority *http2.PriorityParam
 	return 0, fmt.Errorf("quic: unsupported client")
 }
 
+func (r *RoundTripper) PaketsFromClient(client_domain string) uint64{
+	cl, err := r.getClient(client_domain, false)
+
+	if err != nil {
+		return 0
+	}
+
+	c, _ := cl.(*client)
+	pkts := c.GetPakets()
+
+	return pkts
+}
+
 func closeRequestBody(req *http.Request) {
 	if req.Body != nil {
 		req.Body.Close()
@@ -229,3 +242,4 @@ func validMethod(method string) bool {
 func isNotToken(r rune) bool {
 	return !httpguts.IsTokenRune(r)
 }
+

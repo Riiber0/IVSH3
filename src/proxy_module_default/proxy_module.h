@@ -81,6 +81,7 @@ extern GoInt DownloadSegment(GoString segmentURL);
 
 //just for conn.py compatibility
 extern GoInt DownloadSegmentPriority(GoString segmentURL, GoUint8 segmentPriority);
+extern GoUint GetBytes(GoString client_domain);
 extern void StartLogging(GoUint period);
 extern void StopLogging();
 

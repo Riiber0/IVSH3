@@ -232,6 +232,18 @@ func createRemoteClient() {
 	}
 }
 
+//export GetBytes
+func GetBytes(client_domain string) uint{
+	if h2client == nil {
+		return 0
+	}
+
+	totalPkts := h2client.Transport.PaketsFromClient(client_domain)
+	totalBytes := uint(totalPkts * 1460)
+
+	return totalBytes
+}
+
 //export StartLogging
 func StartLogging(period uint) {
 

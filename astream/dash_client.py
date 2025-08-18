@@ -60,6 +60,7 @@ DOWNLOAD = False
 SEGMENT_LIMIT = None
 
 HEAD_TRACE_PATH = "/home/vagrant/workspace/Dash360-sa-ecf/astream/"
+CLIENT = ''
 
 #streams globals
 #old (maibe remove)
@@ -67,13 +68,11 @@ limiter = BoundedSemaphore(100)
 
 #Globals chunks
 chunk_lock = Lock()
-chunk_size = 0
+chunk_start_size = 0
 chunk_start_time = 0
+chunk_end_size = 0
 chunk_end_time = 0
 chunk_tiles = 0
-last_chunk_time = 0
-last_chunk_size = 0
-last_chunk_tiles = 0
 active_streams = 0
 WARMUP_TIME = 3
 
@@ -165,55 +164,54 @@ def gelato_close(conn):
     json_len = struct.pack("!H", len(data))
     conn.sendall(json_len + data)
 
-def update_chunk(size, time):
-    global last_chunk_size
-    global last_chunk_time
-    global last_chunk_tiles
-    global chunk_size
+def update_chunk():
     global chunk_tiles
-    global chunk_end_time
     global active_streams
+    global chunk_end_time
+    global chunk_end_size
 
     chunk_lock.acquire()
     chunk_tiles += 1
-    chunk_size += size
-    chunk_end_time = time
     active_streams -= 1
-    config_dash.LOG.info('Current Batch - tiles = {} Size = {} time = {}'.format(chunk_tiles, chunk_size, str(time)))
+    config_dash.LOG.info('Current Batch: tiles = {}'.format(chunk_tiles))
 
     if active_streams == 0:
-        last_chunk_tiles = chunk_tiles
-        last_chunk_size = chunk_size
-        last_chunk_time = chunk_end_time - chunk_start_time
-        config_dash.LOG.info('Last Batch - {}. Size = {}, time {}'.format(last_chunk_tiles, last_chunk_size, str(last_chunk_time)))
-        chunk_size = 0
+        chunk_end_size = glueConnection.GetBytes(CLIENT)
+        chunk_end_time = timeit.default_timer()
+
+        chunk_size = chunk_end_size - chunk_start_size
+        chunk_time = chunk_end_time - chunk_start_time
+
+        config_dash.LOG.info('Last Batch: {}. Size = {}, time {}'.format(chunk_tiles, chunk_size, str(chunk_time)))
         chunk_tiles = 0
 
     chunk_lock.release()
 
 def start_chunk(start_time, tiles):
     chunk_lock.acquire()
-    global last_chunk_size
-    global last_chunk_time
-    global last_chunk_tiles
-    global chunk_size
-    global chunk_tiles
+    global chunk_start_size
     global chunk_start_time
-    global chunk_end_time
+    global chunk_tiles
     global active_streams
+    global chunk_end_size
+    global chunk_end_time
 
     active_streams += tiles
 
-    if chunk_size > 0:
-        last_chunk_tiles = chunk_tiles
-        last_chunk_size = chunk_size
-        last_chunk_time = chunk_end_time - chunk_start_time
-        config_dash.LOG.info('Last Batch - {}. Size = {}, time {}'.format(last_chunk_tiles, last_chunk_size, str(last_chunk_time)))
+    chunk_end_size = glueConnection.GetBytes(CLIENT)
+    chunk_end_time = timeit.default_timer()
 
-    chunk_size = 0
+    chunk_size = chunk_end_size - chunk_start_size
+    chunk_time = chunk_end_time - chunk_start_time
+
+    if chunk_size > 0 and chunk_time > 0:
+        chunk_time = chunk_end_time - chunk_start_time
+
+        config_dash.LOG.info('Last Batch: {}. Size = {}, time {}'.format(chunk_tiles, chunk_size, str(chunk_time)))
+
     chunk_tiles = 0
-    chunk_start_time = start_time
-    config_dash.LOG.info('New Batch. time = {}'.format(str(start_time)))
+    chunk_start_time = timeit.default_timer()
+    config_dash.LOG.info('New Batch. time = {}'.format(str(chunk_start_time)))
     chunk_lock.release()
 
 def download_segment(segment_url, dash_folder, download=False):
@@ -282,7 +280,7 @@ def download_thread(playback_type, tile, segment_url, priority, file_identifier,
 
     tiles_in_segment.append(tile)
     priority_m.update_priorities(priority)
-    update_chunk(segment_size, end_time)
+    update_chunk()
     #segment_size = dp_object.video[current_bitrate].segment_size
 
     download_sizes_t.append(segment_size)
@@ -465,6 +463,9 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
     download_times_t = []
     #buffer varialbes
     segment_increase = 0
+    #batch variables
+    global CLIENT
+    CLIENT = urllib.parse.urlparse(domain).netloc
     #gelato variables
     conn = None
     addr =None
@@ -531,7 +532,7 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
     # waiting for the player to finish playing
     segment_number = dp_object.video[current_bitrate].start
     download_flag = False
-    warmup = True
+    warmup = False
     while dash_player.playback_state not in dash_buffer.EXIT_STATES:
         segment_number, reading_dict = tileReader.get_tiles()
         if segment_number <= len(dp_list.keys()):
@@ -611,7 +612,6 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
 
             if len(tiles) > 0:
                 glueConnection.connectPM()
-                download_flag = True
             else:
                 continue
 
@@ -620,6 +620,7 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
                 if downloaded_tiles[segment_number][bitrate][tile]:
                     continue
 
+                download_flag = True
                 bitrate = current_bitrate
                 priority = tiles[tile]
                 # print("{} {} {}".format(segment_number, bitrate, tile))
@@ -664,9 +665,9 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
                 gelato_data['buffer'] = dash_player.get_buffer_length()
                 gelato_data['cum_rebuf'] = dash_player.get_rebuf()
                 gelato_data['past_chunk'] = {
-                            'delay': last_chunk_time,
+                            'delay': chunk_end_time - chunk_start_time,
                             'ssim': ssims[segment_number][bitrate],
-                            'size': (last_chunk_size*8)/(1024*1024)
+                            'size': ((chunk_end_size - chunk_start_size)*8)/(1024*1024)
                 }
                 l = ssim_list[int(segment_number):int(segment_number)+5]
                 if len(l) < 5 and len(l) > 0:

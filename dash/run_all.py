@@ -88,7 +88,7 @@ def client(trace1, rtt1, trace2, rtt2, p, s, m, t, b):
     return subprocess.run(client_command, shell=False, stdout = log, timeout = 300), log
 
 def run_set():
-    test_cases = ["mp-df-b", "mp-ms-exp", "mp-ms-b", "sp-df-b"]
+    test_cases = ["mp-ms-exp", "mp-ms-b", "mp-df-b", "sp-df-b"]
     abrs = ['unagi']
     times = ['1.5']
     max_buffer = ["0", "1", "2"]
@@ -104,7 +104,7 @@ def run_set():
 
     runs = 0
     global index
-    total_runs = 10
+    total_runs = 20
     t = "1.5"
     while(runs < total_runs):
         index = str(runs)

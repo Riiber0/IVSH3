@@ -154,7 +154,7 @@ func createRemoteClient() {
 	if useQUIC {
 		if useMS{
 			fmt.Printf("Invalid option for default mpquic")
-			return 
+			return
 
 		} else {
 			// Use a HTTP/2.0 connection via QUIC, default API
@@ -186,6 +186,19 @@ func createRemoteClient() {
 
 		log.Printf("%s created http2 TLS client\n", logTag)
 	}
+}
+
+//export GetBytes
+func GetBytes(client_domain string) uint{
+        if hclient == nil {
+                return 0
+        }
+
+	r := hclient.Transport.(*h2quic.RoundTripper)
+        totalPkts := r.PaketsFromClient(client_domain)
+        totalBytes := uint(totalPkts * 1460)
+
+        return totalBytes
 }
 
 //export StartLogging

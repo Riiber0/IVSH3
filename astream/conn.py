@@ -30,6 +30,7 @@ def setupLib(sa_ecf):
     lib.StopLogging.argtypes = []
     lib.Connect.argtypes = []
     lib.DownloadSegmentPriority.argtypes = [GoString, c_ubyte]
+    lib.GetBytes.argtypes = [GoString]
 
 def connectPM():
     lib.Connect()
@@ -55,3 +56,8 @@ def stopLogging():
 def download_segment_priority_PM(segment_url, segment_priority):
     segment = GoString(segment_url.encode('ascii'), len(segment_url))
     return lib.DownloadSegmentPriority(segment, segment_priority)
+
+def GetBytes(client_domain_url):
+    client_domain = GoString(client_domain_url.encode('ascii'), len(client_domain_url))
+    return lib.GetBytes(client_domain)
+
