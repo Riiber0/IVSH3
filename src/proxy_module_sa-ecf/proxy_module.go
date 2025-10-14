@@ -141,10 +141,12 @@ func DownloadSegment(segmentURL string) int {
 //export DownloadSegmentPriority
 func DownloadSegmentPriority(segmentURL string, segmentPriority uint8) int {
 
+	/*
 	if h2client == nil {
 		return -1
 		createRemoteClient()
 	}
+	*/
 
 
 	// Set stream priority
@@ -188,7 +190,9 @@ func createRemoteClient() {
 			// Use a HTTP/2.0 connection via QUIC, sa-ecf API
 			roundTripper = &h2quic.RoundTripper{
 				TLSClientConfig: tlsConfig,
-				QuicConfig: &quic.Config{CreatePaths: useMP},
+				QuicConfig: &quic.Config{CreatePaths: useMP,
+							IdleTimeout: 10 * time.Second,
+							KeepAlive: true},
 			}
 
 			h2client = &h2quic.Client{
@@ -232,16 +236,16 @@ func createRemoteClient() {
 	}
 }
 
-//export GetBytes
-func GetBytes(client_domain string) uint{
+//export PktsFromClient
+func PktsFromClient(client_domain string) uint64{
 	if h2client == nil {
 		return 0
 	}
 
-	totalPkts := h2client.Transport.PaketsFromClient(client_domain)
-	totalBytes := uint(totalPkts * 1460)
+	totalPkts, cId := h2client.Transport.PaketsFromClient(client_domain)
+	fmt.Printf("Connection ID: %x\n", cId)
 
-	return totalBytes
+	return totalPkts
 }
 
 //export StartLogging

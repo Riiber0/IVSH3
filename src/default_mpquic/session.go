@@ -958,11 +958,14 @@ func (s *session) GetVersion() protocol.VersionNumber {
 func (s *session) GetTotalPackets() uint64{
 
         var totalPkts uint64 = 0
+	s.pathsLock.RLock()
         for pathID, pth := range s.paths {
                 rcvPkts := pth.receivedPacketHandler.GetStatistics()
                 totalPkts = totalPkts + rcvPkts
                 utils.Infof("Path: %x pkts: %d", pathID, rcvPkts)
         }
+
+	s.pathsLock.RUnlock()
 
         return totalPkts
 }

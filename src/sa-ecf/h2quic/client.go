@@ -348,11 +348,11 @@ func authorityAddr(scheme string, authority string) (addr string) {
 	return net.JoinHostPort(host, port)
 }
 
-func (c *client) GetPakets() uint64{
+func (c *client) GetPakets() (uint64, uint64){
 	if c.session == nil {
-		return 0
+		return 0, 0
 	}
-	totalPkts := c.session.GetTotalPackets()
+	totalPkts, cId := c.session.GetTotalPackets()
 
-	return totalPkts
+	return totalPkts, cId
 }

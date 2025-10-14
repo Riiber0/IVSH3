@@ -79,7 +79,7 @@ type Session interface {
 	// Warning: This API should not be considered stable and might change soon.
 	Context() context.Context
 
-	GetTotalPackets() uint64
+	GetTotalPackets() (uint64, uint64)
 }
 
 // A NonFWSession is a QUIC connection between two peers half-way through the handshake.

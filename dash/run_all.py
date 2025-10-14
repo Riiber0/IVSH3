@@ -36,13 +36,13 @@ TRACE_HIGH = '/home/vagrant/workspace/Dash360-sa-ecf/dash/traces_mpshell/high/'
 TRACE_MEDIUM = '/home/vagrant/workspace/Dash360-sa-ecf/dash/traces_mpshell/medium/'
 #/traces_mpshell/medium/
 
-def trace_selector():
+def trace_selector(past_traces):
     traces_high = os.listdir('/home/vagrant/workspace/Dash360-sa-ecf/dash/traces_mpshell/high')
     traces_medium = os.listdir('/home/vagrant/workspace/Dash360-sa-ecf/dash/traces_mpshell/medium')
 
     trace1 = None
     trace2 = None
-    while trace1 == trace2:
+    while trace1 == trace2 and trace1 not in past_traces and trace2 not in past_traces:
         trace1 = random.choice(traces_high)
         trace2 = random.choice(traces_medium)
 
@@ -75,23 +75,26 @@ def client(trace1, rtt1, trace2, rtt2, p, s, m, t, b):
         client_command.append('uni')
     if m == 'exp':
         client_command.append('group')
+    if m == 'nb':
+        client_command.append('line')
 
     if b != '0':
         client_command.append('-sm')
         client_command.append('200')
 
     date = datetime.datetime.now()
-    filename = p + '-' + s + '-' + m + '-' + 'unagi' + '_'+ index + '_' + t.replace('.', '') + '_' + b + '_' + date.strftime("%H-%M-%S_%d-%m-%y")+'.txt'
+    filename = p + '-' + s + '-' + m + '-' + 'VP' + '_'+ index + '_' + t.replace('.', '') + '_' + b + '_' + date.strftime("%H-%M-%S_%d-%m-%y")+'.txt'
     log = open(filename, 'w')
 
     print(client_command)
     return subprocess.run(client_command, shell=False, stdout = log, timeout = 300), log
 
 def run_set():
-    test_cases = ["mp-ms-exp", "mp-ms-b", "mp-df-b", "sp-df-b"]
+    past_traces = []
+    test_cases = ["mp-ms-nb"]
     abrs = ['unagi']
-    times = ['1.5']
-    max_buffer = ["0", "1", "2"]
+    times = ['2.0']
+    max_buffer = ["0"]#, "1", "2"]
     hmd_h_traces = os.listdir('/home/vagrant/workspace/Dash360-sa-ecf/dash/hmd_traces/hmd_high_variance')
     hmd_l_traces = os.listdir('/home/vagrant/workspace/Dash360-sa-ecf/dash/hmd_traces/hmd_low_variance')
     hmd_l_path = '/home/vagrant/workspace/Dash360-sa-ecf/dash/hmd_traces/hmd_low_variance/'
@@ -102,15 +105,23 @@ def run_set():
     random.shuffle(hmd_l_traces)
     random.shuffle(hmd_h_traces)
 
-    runs = 0
+    runs = 3
+
+    for i in range(0, runs):
+        trace1, trace2 = trace_selector(past_traces)
+        past_traces.append(trace1)
+        past_traces.append(trace2)
+
     global index
-    total_runs = 20
-    t = "1.5"
+    total_runs = 10
+    #t = "1.5"
     while(runs < total_runs):
         index = str(runs)
 
         random.seed(runs)
-        trace1, trace2 = trace_selector()
+        trace1, trace2 = trace_selector(past_traces)
+        past_traces.append(trace1)
+        past_traces.append(trace2)
         #print(trace1)
         #sys.exit(0)
         rtt1 = trace1.split('_')[2]
@@ -126,48 +137,49 @@ def run_set():
             p = test.split('-')[0]
             s = test.split('-')[1]
             m = test.split('-')[2]
-            for b in max_buffer:
+            for t in times:
+                for b in max_buffer:
 
-                #DIR = 'exp-' + test.split('.')[0] + abr
-                #if not os.path.exists(DIR):
-                #    os.mkdir(DIR)
+                    #DIR = 'exp-' + test.split('.')[0] + abr
+                    #if not os.path.exists(DIR):
+                    #    os.mkdir(DIR)
 
-                while True:
-                    os.system("ip link show | grep cw | awk -F : '{print $2}' | tr -d ' ' | while read b; do sudo ip link set $b down; done")
-
-                    if test.split('-')[0] == 'mp':
-                        server_proc = server(True, s)
-                    else:
-                        server_proc = server(False, s)
-
-                    try:
+                    while True:
+                        os.system("ip link show | grep cw | awk -F : '{print $2}' | tr -d ' ' | while read b; do sudo ip link set $b down; done")
 
                         if test.split('-')[0] == 'mp':
-                            client_proc, log = client(TRACE_HIGH+trace1, rtt1, TRACE_MEDIUM+trace2, rtt2, p, s, m, t, b)
+                            server_proc = server(True, s)
                         else:
-                            client_proc, log = client(TRACE_HIGH+trace1, rtt1, TRACE_HIGH+trace1, rtt1, p, s, m, t, b)
+                            server_proc = server(False, s)
 
-                        log.close()
-                        if os.path.exists('temp'):
-                            os.system('rm temp')
-                        else:
-                            raise Exception('exit code 1')
+                        try:
 
-                        command = "sudo mv " + log.name + " exp"
-                        print(command)
-                        os.system(command)
+                            if test.split('-')[0] == 'mp':
+                                client_proc, log = client(TRACE_HIGH+trace1, rtt1, TRACE_MEDIUM+trace2, rtt2, p, s, m, t, b)
+                            else:
+                                client_proc, log = client(TRACE_HIGH+trace1, rtt1, TRACE_HIGH+trace1, rtt1, p, s, m, t, b)
 
-                        server_proc.terminate()
-                        break
+                            log.close()
+                            if os.path.exists('temp'):
+                                os.system('rm temp')
+                            else:
+                                raise Exception('exit code 1')
 
-                    except Exception as e:
-                        os.system("pkill python3.6")
-                        server_proc.terminate()
-                        print(e)
-                        command = "sudo rm " + p + '-*'
-                        print(command)
-                        os.system(command)
-                        #sys.exit(0)
+                            command = "sudo mv " + log.name + " exp"
+                            print(command)
+                            os.system(command)
+
+                            server_proc.terminate()
+                            break
+
+                        except Exception as e:
+                            os.system("pkill python3.6")
+                            server_proc.terminate()
+                            print(e)
+                            command = "sudo rm " + p + '-*'
+                            print(command)
+                            os.system(command)
+                            #sys.exit(0)
 
         os.system('rm completed_*')
         os.system(f'touch completed_{runs}')

@@ -42,8 +42,9 @@ import config_dash
 import dash_buffer
 import time
 import pandas as pd
+import numpy as np
 from tile_delivery import *
-from priority_manager import GroupPriority, UniPriority
+from priority_manager import GroupPriority, UniPriority, LinePriority
 from threading import Thread, Lock, BoundedSemaphore
 from util import linePriority, outer_zone_percentage, outer_zone_fixed
 
@@ -60,6 +61,7 @@ DOWNLOAD = False
 SEGMENT_LIMIT = None
 
 HEAD_TRACE_PATH = "/home/vagrant/workspace/Dash360-sa-ecf/astream/"
+MSS = 1460
 CLIENT = ''
 
 #streams globals
@@ -68,10 +70,12 @@ limiter = BoundedSemaphore(100)
 
 #Globals chunks
 chunk_lock = Lock()
-chunk_start_size = 0
+chunk_start_size = np.uint64(0)
 chunk_start_time = 0
-chunk_end_size = 0
+chunk_end_size = np.uint64(0)
 chunk_end_time = 0
+chunk_size = 0
+chunk_time = 0
 chunk_tiles = 0
 active_streams = 0
 WARMUP_TIME = 3
@@ -164,25 +168,32 @@ def gelato_close(conn):
     json_len = struct.pack("!H", len(data))
     conn.sendall(json_len + data)
 
-def update_chunk():
+def update_chunk(size, time):
+    chunk_lock.acquire()
     global chunk_tiles
     global active_streams
     global chunk_end_time
     global chunk_end_size
+    global chunk_size
 
-    chunk_lock.acquire()
     chunk_tiles += 1
     active_streams -= 1
+    #chunk_size += size
+    #chunk_end_time = time
+
     config_dash.LOG.info('Current Batch: tiles = {}'.format(chunk_tiles))
 
     if active_streams == 0:
-        chunk_end_size = glueConnection.GetBytes(CLIENT)
+        chunk_end_size = np.uint64(glueConnection.PktsFromClient(CLIENT))*MSS
         chunk_end_time = timeit.default_timer()
 
-        chunk_size = chunk_end_size - chunk_start_size
+        chunk_size = np.uint64(chunk_end_size - chunk_start_size)
         chunk_time = chunk_end_time - chunk_start_time
 
-        config_dash.LOG.info('Last Batch: {}. Size = {}, time {}'.format(chunk_tiles, chunk_size, str(chunk_time)))
+        #if chunk_size > 0 and chunk_time > 0:
+        config_dash.LOG.info('{} Last Batch: tiles = {} Size = {} time = {}'.format(active_streams, chunk_tiles, chunk_size, str(chunk_time)))
+            #config_dash.LOG.info('No active streams')
+            #config_dash.LOG.info('Last Batch: {}. Size = {}, time {}'.format(chunk_tiles, chunk_size, str(chunk_time)))
         chunk_tiles = 0
 
     chunk_lock.release()
@@ -195,22 +206,27 @@ def start_chunk(start_time, tiles):
     global active_streams
     global chunk_end_size
     global chunk_end_time
+    global chunk_size
 
-    active_streams += tiles
+    if active_streams != 0:
 
-    chunk_end_size = glueConnection.GetBytes(CLIENT)
-    chunk_end_time = timeit.default_timer()
+        chunk_end_size = np.uint64(glueConnection.PktsFromClient(CLIENT))*MSS
+        chunk_end_time = timeit.default_timer()
 
-    chunk_size = chunk_end_size - chunk_start_size
-    chunk_time = chunk_end_time - chunk_start_time
+        #config_dash.LOG.info('Batch Sizes: end {} start {}'.format(chunk_end_size, chunk_start_size))
 
-    if chunk_size > 0 and chunk_time > 0:
+        chunk_size = np.uint64(chunk_end_size - chunk_start_size)
         chunk_time = chunk_end_time - chunk_start_time
 
-        config_dash.LOG.info('Last Batch: {}. Size = {}, time {}'.format(chunk_tiles, chunk_size, str(chunk_time)))
+        #if chunk_size > 0 and chunk_time > 0:
+        config_dash.LOG.info('{} Last Batch: tiles = {} Size = {} time = {}'.format(active_streams, chunk_tiles, chunk_size, str(chunk_time)))
 
+    active_streams += tiles
     chunk_tiles = 0
     chunk_start_time = timeit.default_timer()
+    chunk_start_size = np.uint64(glueConnection.PktsFromClient(CLIENT))*MSS
+    chunk_size = 0
+    #config_dash.LOG.info('New Batch. time = {}, pkts {}'.format(str(chunk_start_time), chunk_start_size))
     config_dash.LOG.info('New Batch. time = {}'.format(str(chunk_start_time)))
     chunk_lock.release()
 
@@ -231,6 +247,8 @@ def download_segment(segment_url, dash_folder, download=False):
     if segment_size < 0:
         config_dash.JSON_HANDLE['playback_info']['connection_loss'] += 1
         raise ValueError("invalid segment_size, connection dropped")
+        os._exit(1)
+
     return segment_size, segment_name
 
 def download_segment_priority(segment_url, priority, dash_folder, download=False):
@@ -238,6 +256,7 @@ def download_segment_priority(segment_url, priority, dash_folder, download=False
         permanent HTTP connection.
         File is not written to disk.
     """
+
     cropped_fInd = segment_url.rfind('/')
     segment_name = segment_url[cropped_fInd+1:len(segment_url)]
 
@@ -249,9 +268,8 @@ def download_segment_priority(segment_url, priority, dash_folder, download=False
     segment_size = glueConnection.download_segment_priority_PM(segment_url, priority)
     if segment_size < 0:
         config_dash.JSON_HANDLE['playback_info']['connection_loss'] += 1
-        #raise ValueError("invalid segment_size, connection dropped")
-        config_dash.LOG.info("Invalid segment size: {}".format(segment_size))
-        os._exit(0)
+        raise ValueError("invalid segment_size, connection dropped")
+        os._exit(1)
 
     return segment_size, segment_name
 
@@ -271,6 +289,7 @@ def download_thread(playback_type, tile, segment_url, priority, file_identifier,
             segment_size, segment_filename = download_segment(segment_url, file_identifier, download)
 
         end_time = timeit.default_timer()
+        #update_chunk(segment_size, end_time)
         segment_download_time = end_time - start_time
         previous_download_times.append(segment_download_time)
         #config_dash.LOG.info("{}: Downloaded segment {}".format(playback_type.upper(), segment_url))
@@ -280,7 +299,6 @@ def download_thread(playback_type, tile, segment_url, priority, file_identifier,
 
     tiles_in_segment.append(tile)
     priority_m.update_priorities(priority)
-    update_chunk()
     #segment_size = dp_object.video[current_bitrate].segment_size
 
     download_sizes_t.append(segment_size)
@@ -295,6 +313,47 @@ def download_thread(playback_type, tile, segment_url, priority, file_identifier,
     download_sizes_t.append(segment_size)
 
     config_dash.LOG.info('Downloaded {}. Size = {} in {} seconds'.format( segment_url, segment_size, str(segment_download_time)))
+
+def master_thread(threads, new_segment, download_sizes_t):
+    global chunk_size
+    global chunk_time
+    global chunk_end_time
+    global chunk_start_time
+    start_time = timeit.default_timer()
+    config_dash.LOG.info('New Batch. time = {}'.format(str(start_time)))
+
+    for t in threads:
+        t.start()
+        if SCHEDULER.upper() == "CLASSIC":
+            t.join()
+
+
+    if not SCHEDULER.upper() == "CLASSIC":
+        for t in threads:
+            t.join()
+
+    end_time = timeit.default_timer()
+    time = end_time - start_time
+    size = sum(download_sizes_t)
+
+
+    chunk_lock.acquire()
+    batch_type = 'TC'
+    if new_segment:
+        chunk_size = size
+        chunk_time = time
+        chunk_start_time = start_time
+        chunk_end_time = end_time
+        batch_type = 'S'
+
+    elif end_time < chunk_start_time or chunk_end_time < start_time :
+        #chunk_size = size
+        #chunk_time = time
+        batch_type = 'TNC'
+
+    chunk_lock.release()
+
+    config_dash.LOG.info('Last Batch: tiles = {} Size = {} time = {} type = {}'.format(len(threads), size, time, batch_type))
 
 def get_media_all(domain, media_info, file_identifier, done_queue):
     """ Download the media from the list of URL's in media
@@ -501,6 +560,8 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
         priority_m = GroupPriority(int(MAX_BUFFER_SIZE) + 1, int(STREAM_MAX))
     elif TP.upper() == "UNI":
         priority_m = UniPriority(int(STREAM_MAX))
+    elif TP.upper() == "LINE":
+        priority_m = LinePriority(int(STREAM_MAX))
 
     #outer zone
     if OUTER_ZONE == "P":
@@ -532,7 +593,8 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
     # waiting for the player to finish playing
     segment_number = dp_object.video[current_bitrate].start
     download_flag = False
-    warmup = False
+    warmup = True
+    glueConnection.connectPM()
     while dash_player.playback_state not in dash_buffer.EXIT_STATES:
         segment_number, reading_dict = tileReader.get_tiles()
         if segment_number <= len(dp_list.keys()):
@@ -556,6 +618,7 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
                     if new_tiles == []:
                         next_segment = segment_number + segment_increase + 1
                         if segment_increase + 1 < int(MAX_BUFFER_SIZE):
+                            print('segment increase')
                             segment_increase += 1
 
                         if segment_number + segment_increase < len(dp_list.keys()):
@@ -610,51 +673,87 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
                 tiles = priority_m.get_priority(tiles, segment_increase)
                 #print(tiles)
 
-            if len(tiles) > 0:
-                glueConnection.connectPM()
-            else:
+            if len(tiles) == 0:
                 continue
 
             total_segment_size = 0
+
+            sch_dict = dict()
             for tile in tiles:
+                bitrate = current_bitrate
+                priority = tiles[tile]
+                if TP.upper() == "LINE" and priority == 0x00 and bitrates.index(current_bitrate) > 0:
+                    bitrate = bitrates[bitrates.index(current_bitrate) - 1]
+
                 if downloaded_tiles[segment_number][bitrate][tile]:
                     continue
 
                 download_flag = True
-                bitrate = current_bitrate
-                priority = tiles[tile]
                 # print("{} {} {}".format(segment_number, bitrate, tile))
+
 
                 path_to_tiles = dp_list[segment_number][bitrate]
                 segment_url = urllib.parse.urljoin(domain, path_to_tiles[tile])
 
                 t = Thread(target=download_thread, daemon=True,
                             args=(playback_type, tile, segment_url, priority, file_identifier, download, 
-                                previous_download_times, tiles_in_segment, recent_download_sizes, segment_files, priority_m))
+                                previous_download_times, tiles_in_segment, download_sizes_t, segment_files, priority_m))
 
-                threads.append(t)
+                if SCHEDULER.upper() == "CLS" or SCHEDULER.upper() == "CLASSIC":
+                    if priority not in sch_dict:
+                        sch_dict[priority] = []
+
+                    sch_dict[priority].append(t)
+
+                else:
+                    if "all" not in sch_dict:
+                        sch_dict["all"] = []
+
+                    sch_dict["all"].append(t)
 
                 downloaded_tiles[segment_number][bitrate][tile] = True
 
             if download_flag:
-                start_time = timeit.default_timer()
-                start_chunk(start_time, len(threads))
-                for t in threads:
-                    t.start()
+                #start_time = timeit.default_timer()
+                #start_chunk(start_time, len(threads))
+                #for t in threads:
+                #    t.start()
 
-                if warmup:
-                    t.join()
+                #if warmup:
+                #    t.join()
 
-                if new_segment:
-                    segment_info = {'playback_length' : video_segment_duration,
-                                    'bitrate' : current_bitrate,
-                                    'ssim' : ssims[segment_number][current_bitrate],
-                                    'segment_number' : segment_number,
-                                    'tiles_in_segment' : tiles_in_segment}
+                if SCHEDULER.upper() == "CLASSIC":
+                    new_sch_dict = dict()
+                    new_sch_dict["all"] = []
+                    for p in sorted(sch_dict.keys(), reverse=True):
+                        for t in sch_dict[p]:
+                            new_sch_dict["all"].append(t)
 
-                    dash_player.write(segment_info)
+                    sch_dict = new_sch_dict
 
-                threads = []
+                first_batch = True
+                for p in sorted(sch_dict.keys(), reverse=True):
+                    threads = sch_dict[p]
+
+                    m = Thread(target=master_thread, daemon=True, args = (threads, new_segment, download_sizes_t))
+                    m.start()
+
+                    if warmup or SCHEDULER.upper() == "CLS" or SCHEDULER.upper() == "ClASSIC":
+                        m.join()
+
+                    if new_segment and first_batch:
+                        segment_info = {'playback_length' : video_segment_duration,
+                                        'bitrate' : current_bitrate,
+                                        'ssim' : ssims[segment_number][current_bitrate],
+                                        'segment_number' : segment_number,
+                                        'tiles_in_segment' : tiles_in_segment}
+
+                        dash_player.write(segment_info)
+                        first_batch = False
+
+                    threads = []
+
+                download_sizes_t = []
 
             if playback_type.upper() == 'SMART' and weighted_mean_object and new_segment:
                 #print(get_segment_sizes(dp_object, segment_number))
@@ -662,12 +761,18 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
 
             elif playback_type.upper() == 'MAGURO' or playback_type.upper() == 'UNAGI' and new_segment:
                 gelato_flag = True
+
+                chunk_lock.acquire()
+                gelato_time = chunk_time
+                gelato_size = chunk_size
+                chunk_lock.release()
+
                 gelato_data['buffer'] = dash_player.get_buffer_length()
                 gelato_data['cum_rebuf'] = dash_player.get_rebuf()
                 gelato_data['past_chunk'] = {
-                            'delay': chunk_end_time - chunk_start_time,
+                            'delay': gelato_time,
                             'ssim': ssims[segment_number][bitrate],
-                            'size': ((chunk_end_size - chunk_start_size)*8)/(1024*1024)
+                            'size': (gelato_size*8)/(1024*1024)
                 }
                 l = ssim_list[int(segment_number):int(segment_number)+5]
                 if len(l) < 5 and len(l) > 0:
@@ -689,7 +794,7 @@ def start_playback_smart(dp_object, domain, playback_type=None, download=False, 
                 dash_player.emergency_tiles = []
                 dash_player.current_segment['tiles_in_segment'].extend(list(tiles))
 
-            if segment_number > WARMUP_TIME and warmup == True:
+            if warmup:
                 warmup = False
                 config_dash.LOG.info("{} : Warmup finished".format(playback_type.upper()))
 
@@ -815,6 +920,7 @@ def start_playback_smart_sequential(dp_object, domain, playback_type=None, downl
     # waiting for the player to finish playing
     segment_number = dp_object.video[current_bitrate].start
     downloaded_flag = False
+    glueConnection.connectPM()
     while dash_player.playback_state not in dash_buffer.EXIT_STATES:
         if segment_number <= len(dp_list.keys()):
 
@@ -845,8 +951,8 @@ def start_playback_smart_sequential(dp_object, domain, playback_type=None, downl
                             current_bitrate, get_segment_sizes(dp_object, segment_number))
 
             # priority = 0xff
-            if TP:
-                lowP, highP = linePriority(tiles)
+            #if TP:
+            #    lowP, highP = linePriority(tiles)
 
             if MS:
                 threads = []
@@ -1121,8 +1227,8 @@ def create_arguments(parser):
                         default=False,
                         help="Keep alive connection to Server")
     parser.add_argument('-s', '--SCHEDULER',
-                        default='lowRTT',
-                        help="Scheduler in multipath usage (lowRTT, RR, redundant)")
+                        default='None',
+                        help="Scheduler in multipath usage (DF, CLS)")
     parser.add_argument('-c', '--CC',
                         default='olia',
                         help="Congestion control scheme")

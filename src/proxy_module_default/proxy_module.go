@@ -160,7 +160,9 @@ func createRemoteClient() {
 			// Use a HTTP/2.0 connection via QUIC, default API
 			roundTripper = &h2quic.RoundTripper{
 				TLSClientConfig: tlsConfig,
-				QuicConfig: &quic.Config{CreatePaths: useMP},
+				QuicConfig: &quic.Config{CreatePaths: useMP,
+							IdleTimeout: 10 * time.Second,
+							KeepAlive: true},
 			}
 
 			hclient = &http.Client{
@@ -188,17 +190,16 @@ func createRemoteClient() {
 	}
 }
 
-//export GetBytes
-func GetBytes(client_domain string) uint{
+//export PktsFromClient
+func PktsFromClient(client_domain string) uint64{
         if hclient == nil {
                 return 0
         }
 
 	r := hclient.Transport.(*h2quic.RoundTripper)
         totalPkts := r.PaketsFromClient(client_domain)
-        totalBytes := uint(totalPkts * 1460)
 
-        return totalBytes
+        return totalPkts
 }
 
 //export StartLogging

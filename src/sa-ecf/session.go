@@ -613,6 +613,7 @@ func (s *session) handleStreamFrame(frame *wire.StreamFrame) error {
 			sntPkts, sntRetrans, sntLost := pth.sentPacketHandler.GetStatistics()
 			rcvPkts := pth.receivedPacketHandler.GetStatistics()
 			utils.Infof("Path %x: sent %d retrans %d lost %d; rcv %d", pathID, sntPkts, sntRetrans, sntLost, rcvPkts)
+			//fmt.Printf("Connection %x Stream %x Path %x: sent %d retrans %d lost %d; rcv %d\n", s.connectionID, frame.StreamID, pathID, sntPkts, sntRetrans, sntLost, rcvPkts)
 		}
 		s.pathsLock.RUnlock()
 	}
@@ -996,14 +997,16 @@ func (s *session) GetVersion() protocol.VersionNumber {
 	return s.version
 }
 
-func (s *session) GetTotalPackets() uint64{
+func (s *session) GetTotalPackets() (uint64, uint64){
 
+	//s.pathsLock.RLock()
 	var totalPkts uint64 = 0
 	for pathID, pth := range s.paths {
 		rcvPkts := pth.receivedPacketHandler.GetStatistics()
 		totalPkts = totalPkts + rcvPkts
 		utils.Infof("Path: %x pkts: %d", pathID, rcvPkts)
 	}
+	//s.pathsLock.RUnlock()
 
-	return totalPkts
+	return totalPkts, uint64(s.connectionID)
 }
